@@ -1,0 +1,8 @@
+{
+    "shape": [
+        32,
+        24
+    ],
+    "dtype": "Float32",
+    "order": "F"
+}

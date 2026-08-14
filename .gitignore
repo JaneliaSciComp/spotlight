@@ -1,0 +1,7 @@
+.pixi
+__pycache__/
+*.pyc
+.pytest_cache/
+bench_results/
+# Generated per experiment, into the experiment's own directory -- never the checkout.
+bsub_*.sh
