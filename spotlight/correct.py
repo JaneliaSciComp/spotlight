@@ -54,7 +54,7 @@ from .fields import _check_basic_mode, basic_model
 from .progress import Progress
 from .tiffout import (COMPRESSION, DEFAULT_SLAB_PLANES as TIFF_SLAB_PLANES,
                       tiff_tile_path, voxel_size_um, write_tile_ome_tiff)
-from .tilestats import MAX_SCALE, _classify
+from .tilestats import _classify, limits
 from . import config as _config
 from . import stores
 
@@ -71,7 +71,7 @@ MODES = ("auto", "basic", "intensity", "both")
 # casts to an ARBITRARY uint16 instead of saturating. The floor must also not be tiny,
 # or `1/flat` grows until the two terms cancel catastrophically in float32 -- at 1e-6
 # they are ~6.7e8 apart and the difference keeps no significant digits.
-FLAT_FLOOR = np.float32(1e-3)
+FLAT_FLOOR = np.float32(1e-3)   # default for `flat_floor`; see the warning below
 
 
 def apply_correction(image, flat, dark, nonneg_offset=0.0, multiplier=1.0):
@@ -168,7 +168,8 @@ def _intensity_params(cfg, setup):
         print(f"correct: setup {setup} has no stats -> no intensity rescale")
         return "none", 0, 0.0, 1.0, target_mean
 
-    kind = _classify(s)
+    lim = limits(cfg)
+    kind = _classify(s, lim)
     thr, _n_fg = s["threshold"], s["n_foreground"]
     if kind == "empty":
         print(f"correct: setup {setup} too empty -> no intensity rescale")
@@ -177,7 +178,7 @@ def _intensity_params(cfg, setup):
     mean_i, std_i = s["corrected_mean"], s["corrected_std"]
     if kind == "uniform":
         thr = float("-inf")            # no clean background to protect: correct everything
-    scale = min(target_std / std_i, MAX_SCALE)
+    scale = min(target_std / std_i, lim["max_gain_scale"])
     print(f"correct: setup {setup} [{kind}] mean={mean_i:.2f} std={std_i:.2f} -> "
           f"target_mean={target_mean:.2f} target_std={target_std:.2f} "
           f"scale={scale:.4f} thr={thr:.1f}")
@@ -220,9 +221,10 @@ async def _write_tiff(view, setup, mode, src_c, zyx, dtype_name, shard_corr):
     t_start = time.perf_counter()
     print(f"correct: setup {setup} mode={mode} {view['input_format']} {zyx} -> "
           f"tiff @ {path}")
-    print(f"correct: streaming {Z} planes of {Y}x{X} in {TIFF_SLAB_PLANES}-plane slabs, "
+    print(f"correct: streaming {Z} planes of {Y}x{X} in "
+          f"{int(view.get('tiff_slab_planes') or TIFF_SLAB_PLANES)}-plane slabs, "
           f"voxel {voxel if voxel else 'UNCALIBRATED (no dataset.xml voxelSize)'} um, "
-          f"compression {COMPRESSION}")
+          f"compression {view.get('tiff_compression') or COMPRESSION}")
     if voxel is None:
         print("correct: WARNING no voxel size found -- the OME-TIFF will carry no "
               "calibration, so anything measured from it in BigStitcher will be in "
@@ -244,7 +246,9 @@ async def _write_tiff(view, setup, mode, src_c, zyx, dtype_name, shard_corr):
         await asyncio.get_running_loop().run_in_executor(
             pool, lambda: write_tile_ome_tiff(
                 path, read_slab, (Z, Y, X), dtype_name, voxel=voxel,
-                planes=TIFF_SLAB_PLANES, progress=bar))
+                planes=int(view.get("tiff_slab_planes") or TIFF_SLAB_PLANES),
+                compression=(view.get("tiff_compression") or COMPRESSION),
+                progress=bar))
     finally:
         bar.close()
         pool.shutdown(wait=True)
@@ -275,6 +279,7 @@ async def _run(cfg, setup, requested):
     basic = basic_model(view, setup, zyx[1:]) if mode in ("basic", "both") else None
     if basic is not None:
         cam = camera_of(view, setup)
+        floor = np.float32(view.get("flat_floor") or FLAT_FLOOR)
         n_zero = int((basic.flat <= 0).sum())
         if n_zero:
             # A zero here is not merely a division by zero, because the kernel folds
@@ -287,10 +292,10 @@ async def _run(cfg, setup, requested):
             #
             # Not silent: a saturated patch reads as real signal downstream.
             print(f"warning: the flat field for setup {setup} has {n_zero} non-positive "
-                  f"pixel(s) of {basic.flat.size}; those are floored to {float(FLAT_FLOOR)} "
+                  f"pixel(s) of {basic.flat.size}; those are floored to {float(floor)} "
                   f"and will read as saturated wherever raw exceeds dark. Check "
                   f"{basic_field_paths(view, cam)[0]}")
-            basic.flat = np.maximum(basic.flat, FLAT_FLOOR)
+            basic.flat = np.maximum(basic.flat, floor)
         print(f"correct: setup {setup} flat/dark from camera {cam + 1} "
               f"(flat mean={float(basic.flat.mean()):.4f}, dark mean={float(basic.dark.mean()):.2f})")
 

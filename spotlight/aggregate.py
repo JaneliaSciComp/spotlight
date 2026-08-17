@@ -55,7 +55,7 @@ from .fields import _check_basic_mode, basic_model
 from .formats import _SPEC, _input_location, canonical_view
 from .stores import _atomic_write_json, source_pyramid_factors
 from .tilestats import (
-    MAX_SCALE, MIN_FG_FRACTION, MIN_FOREGROUND, THRESHOLD_METHODS, _classify,
+    MIN_FG_FRACTION, MIN_FOREGROUND, THRESHOLD_METHODS, _classify, limits,
     open_downsampled,
 )
 
@@ -545,7 +545,8 @@ def cmd_aggregate(cfg):
     # signal, so they neither constrain a neighbour's gain nor get a gain of their
     # own -- they pass through uncorrected. Only pairs between two non-empty tiles
     # contribute constraints.
-    nonempty = {s for s in setups if _classify(stat_cache[s]) != "empty"}
+    lim = limits(cfg)
+    nonempty = {s for s in setups if _classify(stat_cache[s], lim) != "empty"}
     pairs = [(a, b, bb) for (a, b, bb) in pairs if a in nonempty and b in nonempty]
     print(dt.now(), f"aggregate: {len(setups)} tiles ({len(nonempty)} non-empty), "
                     f"{len(pairs)} overlapping pairs, {n_cores} threads, "
@@ -606,7 +607,7 @@ def cmd_aggregate(cfg):
     eq_means, eq_stds = [], []
     for s in setups:
         st = stat_cache[s]
-        kind = _classify(st)
+        kind = _classify(st, lim)
         if kind == "bimodal":
             m, sd = st["mean"], st["std"]
         elif kind == "uniform":
@@ -625,7 +626,7 @@ def cmd_aggregate(cfg):
         st = dict(stat_cache[s])
         st["camera"] = cam_of.get(s)
         st["gain"] = gains[s]
-        if _classify(st) != "empty":
+        if _classify(st, lim) != "empty":
             st["corrected_mean"] = gains[s] * M
             st["corrected_std"] = gains[s] * S
         setups_out[str(s)] = st

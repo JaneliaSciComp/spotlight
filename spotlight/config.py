@@ -87,6 +87,31 @@ DEFAULTS = {
     # stay equal, so a drift fails a test instead of silently changing the gate.
     "min_overlap_foreground": 256,      # = tilestats.MIN_FOREGROUND
     "min_overlap_fraction": 0.001,      # = tilestats.MIN_FG_FRACTION
+
+    # ─── tile classification (tilestats._classify) ────────────────────────────
+    # Decides `empty` / `bimodal` / `uniform` per tile, which is not cosmetic: an
+    # `empty` tile is dropped from the gain solve AND passed through uncorrected, and a
+    # `uniform` tile is rescaled over EVERY pixel (thr = -inf, whole-tile mean/std)
+    # rather than over a foreground mask.
+    "min_tile_foreground": 256,         # absolute voxel floor (old stats files only)
+    "min_tile_fraction": 0.001,         # foreground as a fraction of the tile -> `empty`
+    "min_uniform_std": 10.0,            # whole-tile std below this -> `empty` (all noise)
+    "min_background_area": 0.02,        # empty_area below this -> `uniform`, not `bimodal`
+    "max_gain_scale": 8.0,              # clamp on the per-tile intensity rescale
+
+    # ─── emptiness stage ──────────────────────────────────────────────────────
+    "empty_occupancy_floor": 0.02,      # column occupancy below this counts as empty
+    "otsu_sample_voxels": 32_000_000,   # pooled subsample size for the threshold
+    "background_percentile": 5,         # percentile of empty-pixel means -> dark floor
+
+    # ─── apply ────────────────────────────────────────────────────────────────
+    # The kernel folds (raw-dark)/flat into raw*a + b, so flat == 0 gives inf + (-inf)
+    # = NaN, which casts to an ARBITRARY uint16. Flooring makes it saturate instead.
+    "flat_floor": 1e-3,
+
+    # ─── OME-TIFF output (output_format = "tiff") ─────────────────────────────
+    "tiff_compression": "zstd",         # or "deflate", "lzw", None for uncompressed
+    "tiff_slab_planes": 64,             # z planes held in memory at once while streaming
 }
 
 BASIC_DEFAULTS = {

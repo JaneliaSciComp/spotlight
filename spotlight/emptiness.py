@@ -177,7 +177,8 @@ def _empty_areas(cfg, setups):
         print(dt.now(), f"emptiness: threshold {threshold:.1f} from {how} "
                         f"(no sampling pass needed)", flush=True)
     else:
-        per_tile = max(1, OTSU_SAMPLE_VOXELS // len(setups))
+        per_tile = max(1, int(cfg.get("otsu_sample_voxels")
+                              or OTSU_SAMPLE_VOXELS) // len(setups))
 
         def _sample(s):
             v = _read_tile(cfg, s, level)[::4].ravel()[::7]
@@ -209,7 +210,8 @@ def _empty_areas(cfg, setups):
     def _measure(s):
         v = _read_tile(cfg, s, level)
         occupancy = (v > threshold).mean(axis=0)          # (Y, X)
-        is_empty = occupancy < EMPTY_OCCUPANCY_FLOOR
+        is_empty = occupancy < float(cfg.get("empty_occupancy_floor")
+                                     or EMPTY_OCCUPANCY_FLOOR)
         # Per-frame-pixel mean of sub-threshold voxels, kept only where the whole
         # column is unoccupied. Accumulated over every tile: a full tile has almost no
         # empty pixels and so contributes almost nothing, which is exactly right --
@@ -237,10 +239,12 @@ def _empty_areas(cfg, setups):
     # Exact regardless of completion order: it is a sum of booleans. `bg_sum` is a float
     # sum, so threading reorders it, but only in the last bits of a percentile input.
     phi = acc["phi"] / len(setups)
-    return empty, threshold, level, _background_level(acc["bg_sum"], acc["bg_cnt"]), phi
+    return empty, threshold, level, _background_level(acc["bg_sum"], acc["bg_cnt"],
+                                        float(cfg.get("background_percentile")
+                                              or BACKGROUND_PERCENTILE)), phi
 
 
-def _background_level(bg_sum, bg_cnt):
+def _background_level(bg_sum, bg_cnt, percentile=BACKGROUND_PERCENTILE):
     """The dataset's additive background level in counts, or None if nothing observed it.
 
     Taken as the BACKGROUND_PERCENTILE of the per-frame-pixel background means, not
@@ -264,7 +268,7 @@ def _background_level(bg_sum, bg_cnt):
     if not seen.any():
         return None
     vals = bg_sum[seen] / bg_cnt[seen]
-    return float(np.percentile(vals, BACKGROUND_PERCENTILE))
+    return float(np.percentile(vals, percentile))
 
 
 def _write_empty_fraction(path, phi):

@@ -373,18 +373,47 @@ def cmd_stats(cfg, setup):
 
 
 
-def _enough_foreground(s):
+# Every module constant above is a DEFAULT, not a fixed law: `limits(cfg)` lets a toml
+# override each one. They stay module constants so the functions below are callable
+# without a config (tests, notebooks) and so the default is stated once.
+_LIMIT_KEYS = {
+    "min_tile_fraction": "MIN_FG_FRACTION",
+    "min_tile_foreground": "MIN_FOREGROUND",
+    "min_uniform_std": "MIN_UNIFORM_STD",
+    "min_background_area": "MIN_BACKGROUND_AREA",
+    "max_gain_scale": "MAX_SCALE",
+}
+
+
+def limits(cfg=None):
+    """The tile-classification thresholds, with any `cfg` overrides applied.
+
+    Returned as a plain dict rather than read from `cfg` at each site so that
+    `_classify` and `_enough_foreground` stay callable with no config at all -- they are
+    used from tests and from `bench/compare_thresholds.py`, neither of which has one.
+    """
+    out = {k: globals()[const] for k, const in _LIMIT_KEYS.items()}
+    if cfg:
+        for k in _LIMIT_KEYS:
+            v = cfg.get(k)
+            if v is not None:
+                out[k] = float(v)
+    return out
+
+
+def _enough_foreground(s, lim=None):
     """Whole-tile emptiness test: is the foreground at least MIN_FG_FRACTION of the
     tile's voxels? Uses `n_voxels` when present (written by `_compute_stats`, or
     backfilled by `cmd_aggregate` from the tile shape); falls back to the legacy
     absolute MIN_FOREGROUND count only for old stats files lacking `n_voxels`."""
+    lim = limits() if lim is None else lim
     nv = s.get("n_voxels")
     if nv:
-        return s["n_foreground"] >= MIN_FG_FRACTION * nv
-    return s["n_foreground"] >= MIN_FOREGROUND
+        return s["n_foreground"] >= lim["min_tile_fraction"] * nv
+    return s["n_foreground"] >= lim["min_tile_foreground"]
 
 
-def _classify(s):
+def _classify(s, lim=None):
     """Pick the apply stage's correction strategy for one tile, from its empty frame
     area (`empty_area`, injected by `cmd_aggregate` from the `emptiness` stage).
 
@@ -409,16 +438,17 @@ def _classify(s):
     threshold, so those 15 tiles were receiving no intensity rescale at all across
     67-87% of their voxels.
     """
+    lim = limits() if lim is None else lim
     empty_area = s.get("empty_area")
     if empty_area is None or not np.isfinite(empty_area):
         raise RuntimeError(
             f"tile {s.get('setup')} has no empty_area; run the emptiness stage "
             f"(`python -m spotlight emptiness`) before aggregate -- classification "
             f"depends on it")
-    if not _enough_foreground(s) or not (
+    if not _enough_foreground(s, lim) or not (
             np.isfinite(s["mean"]) and np.isfinite(s["std"]) and s["std"] > 0):
         return "empty"
     all_std = s.get("all_std", float("nan"))
-    if not (np.isfinite(all_std) and all_std >= MIN_UNIFORM_STD):
+    if not (np.isfinite(all_std) and all_std >= lim["min_uniform_std"]):
         return "empty"
-    return "bimodal" if empty_area >= MIN_BACKGROUND_AREA else "uniform"
+    return "bimodal" if empty_area >= lim["min_background_area"] else "uniform"
