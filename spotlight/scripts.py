@@ -42,16 +42,18 @@ def runner():
     return f"pixi run --manifest-path {PACKAGE_ROOT} python -m spotlight"
 
 
-def _throttle(cfg, cores, n_jobs):
+def _throttle(cfg, cores, n_jobs, n_arrays=1):
     """The LSF job-array throttle suffix: how many elements may run at once.
 
-    Budgeted in CORES, not jobs -- `max_concurrent_cores` divided by the cores one element
-    asks for. A throttle written in jobs means a 48-core stats stage and a 20-core apply
-    stage hold wildly different amounts of the cluster for the same number. Capped at the
-    array size (a throttle above it does nothing) and floored at 1, so a single element of
-    an over-budget stage still runs rather than the array never starting.
+    Budgeted in CORES, not jobs -- what the script holds is `cores * throttle * n_arrays`,
+    so the budget is divided by both the cores one element asks for AND the number of
+    arrays the script submits together (the stats pass submits one per camera, and they all
+    run at once). A throttle written in jobs means a 48-core stats stage and a 20-core
+    apply stage hold wildly different amounts of the cluster for the same number. Capped at
+    the array size (a throttle above it does nothing) and floored at 1, so a single element
+    of an over-budget stage still runs rather than the array never starting.
     """
-    return f"%{max(1, min(n_jobs, cfg['max_concurrent_cores'] // cores))}"
+    return f"%{max(1, min(n_jobs, cfg['max_concurrent_cores'] // (cores * n_arrays)))}"
 
 
 def ensure_log_dirs(cfg):
@@ -73,9 +75,13 @@ def ensure_log_dirs(cfg):
             print(f"created log directory {d} (for {key})")
 
 
-def _bsub(cfg, name, cores, out_suffix, command, array=None):
-    """`array` is the element COUNT (the array is always 1-N), or None for a single job."""
-    job = f"{name}[1-{array}]{_throttle(cfg, cores, array)}" if array else name
+def _bsub(cfg, name, cores, out_suffix, command, array=None, n_arrays=1):
+    """`array` is the element COUNT (the array is always 1-N), or None for a single job.
+
+    `n_arrays` is how many such arrays the generated script submits together, so the core
+    budget is split between them rather than handed to each.
+    """
+    job = f"{name}[1-{array}]{_throttle(cfg, cores, array, n_arrays)}" if array else name
     index = "_%I" if array else ""
     return (f'bsub -J "{job}"'
             f" -n {cores} -P {cfg['lsf_project']}"
@@ -194,7 +200,7 @@ def create_quartile_histograms(cfg=None):
         cmd = (f"{runner()} stats {c}"
                f" $((($LSB_JOBINDEX-1)*{per_job}+1)) $(($LSB_JOBINDEX*{per_job}))")
         lines.append(_bsub(cfg, "spotlight-stats", cfg["n_cores_stats"], f"qstack_{c + 1}",
-                           cmd, array=num_jobs))
+                           cmd, array=num_jobs, n_arrays=len(cameras)))
 
     # Clear the previous run's background-quantile partials. They are summed blind, so a
     # stale file -- from a run over different setups, or from a job whose chunk range this
