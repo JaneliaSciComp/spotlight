@@ -107,7 +107,7 @@ See config.py for a complete list of params. Below is a compilation of some that
 &emsp;This is the intensity matching regularization term. If you would like your gain mappings to be almost unregularized (for ex, highly determined systems like camera-based workflows), we recommend 1e-6. 0.01 or 0.1 is typical for tile-based workflows.
 
 ```"gain_floor": "otsu" (default), "li", "pooled", or a number``` \
-&emsp;This is the minimum intensity cutoff used to calculate the gain mappings. Otsu is most efficient ok for most workflows. However, with very sparse data (i.e. a small specimen that does not fill the whole tile), "li" works better.
+&emsp;This is the minimum intensity cutoff used to calculate the gain mappings. Otsu is the most efficient and is ok for most workflows. However, with very sparse data (i.e. a small specimen that does not fill the whole tile), "li" works better.
 
 ```"tile_threshold": "otsu" (default), "li", "pooled", or a number``` \
-&emsp;This is the minimum intensity cutoff used during the intensity correction step; i.e. all voxels with an intensity below this threshold will be considered to be background and not adjusted. Typically matches gain_floor, but it can be helpful to lower this is some foreground voxels are not being adjusted.
+&emsp;This is the minimum intensity cutoff used during the intensity correction step; i.e. all voxels with an intensity below this threshold will be considered to be background and not adjusted. Typically matches gain_floor, but it can be helpful to lower this if some foreground voxels are not being adjusted.
