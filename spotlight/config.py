@@ -46,7 +46,11 @@ DEFAULTS = {
     "output_stem": "",
     "error_stem": "",
     "lsf_project": "",
-    "n_cores_stats": 48,
+    # Both the stage's `bsub -n` and its numpy ThreadPoolExecutor. Measured at 2.27
+    # cores of actual CPU (477 s over a 210 s wall) and 5.8 GB peak RSS, so this is a
+    # compute figure now, not the memory request it used to be at 48 -- Janelia hands
+    # out 15 GB per slot, and read concurrency comes from `_concurrency`, not from here.
+    "n_cores_stats": 3,
     "n_cores_correction": 20,
     "n_cores_int_stats": 20,
     "n_cores_int_aggregate": 20,

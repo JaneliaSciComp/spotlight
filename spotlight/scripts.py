@@ -35,11 +35,27 @@ def runner():
     The manifest path is derived from `__file__` rather than configured, so a moved
     checkout fixes itself the next time the scripts are regenerated.
 
+    MALLOC_ARENA_MAX caps glibc's per-thread malloc arenas. The stages run hundreds of
+    threads (tensorstore's `file_io_concurrency` alone is `cores * 64`) and churn numpy
+    temporaries in all of them; by default glibc gives each thread its own arena and the
+    freed memory stays resident. Measured on the stats stage, both arms on one host: peak
+    RSS 49.1 GB uncapped against 5.8 GB at 4, and the capped arm was slightly FASTER (210 s
+    vs 227 s, 477 s of CPU against 512 s) -- there is no arena contention to trade away.
+    That 43 GB was retention, not working set; `bytes_per_setup` had the real figure right
+    all along.
+
+    It has to be set in the ENVIRONMENT, ahead of the process: glibc reads it when it
+    creates the first arena, long before `__main__` runs, so assigning `os.environ` inside
+    Python is too late to do anything. Measured on the stats stage only, hence the
+    `:-` default -- a stage with more cores and fewer threads can override it from the
+    submitting shell without editing this.
+
     `spotlight` itself comes from the environment -- it is a `[pypi-dependencies]` entry
     installed editable, so `pixi run` alone puts it on the path. Run `pixi install` after
     moving or first cloning the checkout, or the stages will not import.
     """
-    return f"pixi run --manifest-path {PACKAGE_ROOT} python -m spotlight"
+    return ('MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-4} '
+            f"pixi run --manifest-path {PACKAGE_ROOT} python -m spotlight")
 
 
 def _throttle(cfg, cores, n_jobs, n_arrays=1):
