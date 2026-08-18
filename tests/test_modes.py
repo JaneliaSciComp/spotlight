@@ -243,6 +243,21 @@ def test_log_directories_are_created(tmp_path, monkeypatch):
     assert (tmp_path / "deep" / "err").is_dir(), "error_stem's parent was not created"
 
 
+def test_a_stem_ending_in_a_separator_is_itself_the_log_directory(tmp_path, monkeypatch):
+    """`.../out/` means LSF writes `.../out/_correct.txt`, one level deeper than the
+    stem's `.parent` -- so that trailing-slash directory has to be created too."""
+    from spotlight import config, scripts
+    monkeypatch.chdir(tmp_path)
+    config.set_config(results_root=str(tmp_path / "r"), last_setup=2,
+                      setups_per_camera=3, lsf_project="p",
+                      output_stem=f"{tmp_path / 'logs' / 'out'}/",
+                      error_stem=f"{tmp_path / 'logs' / 'err'}/",
+                      input_basic_path="/in.zarr", output_basic_path="/out.zarr")
+    scripts.write_correction_script(config.load_config())
+    assert (tmp_path / "logs" / "out").is_dir(), "trailing-slash output dir not created"
+    assert (tmp_path / "logs" / "err").is_dir(), "trailing-slash error dir not created"
+
+
 def test_empty_fraction_map_lives_in_the_camera_folder(tmp_path):
     from spotlight.config import empty_fraction_path
     cfg = {"results_root": str(tmp_path)}

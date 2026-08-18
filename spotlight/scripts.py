@@ -62,14 +62,18 @@ def ensure_log_dirs(cfg):
     LSF does not create them. A missing one does not stop the job -- it runs and then
     fails to write its log, so the work is done but the output is gone and the failure
     reads as "Fail to open stderr file ... No such file or directory" at the very end.
-    Both stems are PREFIXES, not directories (`.../output/output` -> files named
-    `output_correct_1.txt`), so it is the parent that has to exist.
+
+    The stem is a PREFIX, not a directory (`.../output/output` -> files named
+    `output_correct_1.txt`), so what has to exist is the parent of the FORMATTED path, not
+    of the stem. Taking the parent of the stem itself is off by one level whenever the
+    stem ends in a separator (`.../logs/output/` -> logs of `.../logs/output/_correct.txt`,
+    living one directory deeper than `Path(stem).parent` says).
     """
     for key in ("output_stem", "error_stem"):
         stem = cfg.get(key)
         if not stem:
             continue
-        d = Path(stem).parent
+        d = Path(f"{stem}_x.txt").parent
         if not d.is_dir():
             d.mkdir(parents=True, exist_ok=True)
             print(f"created log directory {d} (for {key})")
