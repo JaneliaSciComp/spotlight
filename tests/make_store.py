@@ -62,7 +62,6 @@ def write_store(root, fmt, setups=(0, 1, 2, 3), depths=None):
         "output_basic_path": str(root) + "_out",
         "input_format": fmt,
         "output_format": fmt,
-        "format": fmt,
         "chunk_size": [32, 32, 32],
         "shard_size": [64, 64, 64],
         "z_batch": 1,

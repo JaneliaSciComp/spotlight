@@ -181,7 +181,10 @@ def _run_camera(tmp_path, monkeypatch, measured, **overrides):
     monkeypatch.setattr("spotlight.qstack.qstack_frame_size", lambda c, s: stack.shape[:2])
 
     params = dict(BASIC_DEFAULTS)
-    params.update(working_size=0, max_iterations=20, max_reweighting_iterations=2)
+    # autotune off: these tests are about the collapse warning, and searching lambda would
+    # cost ~11 extra fits to reach the same driver code path.
+    params.update(working_size=0, max_iterations=20, max_reweighting_iterations=2,
+                  autotune=False)
     params.update(overrides)
     cfg = {"results_root": str(tmp_path), "qstacks_dir": str(tmp_path),
            "basic_stats_level": 0, "input_format": "zarr2",

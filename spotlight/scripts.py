@@ -42,9 +42,16 @@ def runner():
     return f"pixi run --manifest-path {PACKAGE_ROOT} python -m spotlight"
 
 
-def _throttle(cfg):
-    """The LSF job-array throttle suffix: how many elements may run at once."""
-    return f"%{cfg['max_concurrent_jobs']}"
+def _throttle(cfg, cores, n_jobs):
+    """The LSF job-array throttle suffix: how many elements may run at once.
+
+    Budgeted in CORES, not jobs -- `max_concurrent_cores` divided by the cores one element
+    asks for. A throttle written in jobs means a 48-core stats stage and a 20-core apply
+    stage hold wildly different amounts of the cluster for the same number. Capped at the
+    array size (a throttle above it does nothing) and floored at 1, so a single element of
+    an over-budget stage still runs rather than the array never starting.
+    """
+    return f"%{max(1, min(n_jobs, cfg['max_concurrent_cores'] // cores))}"
 
 
 def ensure_log_dirs(cfg):
@@ -67,7 +74,8 @@ def ensure_log_dirs(cfg):
 
 
 def _bsub(cfg, name, cores, out_suffix, command, array=None):
-    job = f"{name}[{array}]{_throttle(cfg)}" if array else name
+    """`array` is the element COUNT (the array is always 1-N), or None for a single job."""
+    job = f"{name}[1-{array}]{_throttle(cfg, cores, array)}" if array else name
     index = "_%I" if array else ""
     return (f'bsub -J "{job}"'
             f" -n {cores} -P {cfg['lsf_project']}"
@@ -186,7 +194,7 @@ def create_quartile_histograms(cfg=None):
         cmd = (f"{runner()} stats {c}"
                f" $((($LSB_JOBINDEX-1)*{per_job}+1)) $(($LSB_JOBINDEX*{per_job}))")
         lines.append(_bsub(cfg, "spotlight-stats", cfg["n_cores_stats"], f"qstack_{c + 1}",
-                           cmd, array=f"1-{num_jobs}"))
+                           cmd, array=num_jobs))
 
     # Clear the previous run's background-quantile partials. They are summed blind, so a
     # stale file -- from a run over different setups, or from a job whose chunk range this
@@ -217,7 +225,7 @@ def write_correction_script(cfg=None, mode="basic"):
     cmd = f"{prefix}{runner()} correct {arg} --mode {mode}"
     _write("bsub_correction.sh",
            _bsub(cfg, "spotlight-correct", cfg["n_cores_correction"], "correct", cmd,
-                 array=f"1-{n}") + "\n")
+                 array=n) + "\n")
 
 
 def create_intensity_correction_script(cfg=None):
@@ -251,7 +259,7 @@ def create_intensity_correction_script(cfg=None):
     ):
         if is_array:
             cmd = f"{prefix}{runner()} int-{stage} {arg}"
-            line = _bsub(cfg, name, cores, suffix, cmd, array=f"1-{n}")
+            line = _bsub(cfg, name, cores, suffix, cmd, array=n)
         else:
             line = _bsub(cfg, name, cores, suffix, f"{runner()} int-{stage}")
         _write(f"bsub_int_{script}.sh", line + "\n")

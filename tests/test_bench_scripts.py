@@ -109,7 +109,7 @@ def test_generated_bsub_lines_do_not_expand_job_variables(tmp_path, monkeypatch)
     config.set_config(
         input_basic_path=store["input_basic_path"],
         output_basic_path=store["output_basic_path"],
-        results_root=str(tmp_path / "results"), format="zarr2",
+        results_root=str(tmp_path / "results"), input_format="zarr2",
         last_setup=2, setups_per_camera=3, chunk_size=[32, 32, 32],
         shard_size=[64, 64, 64], chunks_per_job=2, lsf_project="testproj",
         output_stem=str(tmp_path / "out"), error_stem=str(tmp_path / "err"),

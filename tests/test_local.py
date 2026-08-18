@@ -23,7 +23,7 @@ def experiment(tmp_path, monkeypatch):
         input_basic_path=store["input_basic_path"],
         output_basic_path=store["output_basic_path"],
         results_root=str(tmp_path / "results"), qstacks_dir=str(tmp_path / "qstacks"),
-        format="zarr2", last_setup=2, setups_per_camera=3,
+        input_format="zarr2", last_setup=2, setups_per_camera=3,
         chunk_size=[32, 32, 32], shard_size=[64, 64, 64],
         lsf_project="p", output_stem=str(tmp_path / "o"),
         error_stem=str(tmp_path / "e"), n_cores_stats=2, n_cores_correction=2,

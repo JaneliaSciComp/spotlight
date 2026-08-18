@@ -52,7 +52,7 @@ DEFAULTS = {
     "n_cores_int_aggregate": 20,
     "n_cores_int_correct": 20,
     "chunks_per_job": 64,
-    "max_concurrent_jobs": 100,
+    "max_concurrent_cores": 2000,
     "z_batch": 1,
     # ─── the per-tile gain solve (aggregate) ──────────────────────────────────
     # Listed here so `load_config()` shows every knob the stage reads; `aggregate.py`
@@ -114,6 +114,7 @@ BASIC_DEFAULTS = {
     "estimate_darkfield": True,
     "lambda": 0.0,
     "lambda_darkfield": 0.0,
+    "autotune": True,
     "max_iterations": 500,
     "optimization_tol": 1e-6,
     "reweight_tol": 1e-3,
@@ -271,14 +272,19 @@ def _load_toml_config(require_intensity_io=True):
         else:
             cfg[key] = ""
     cfg["results_root"] = expand(cfg["results_root"])
-    cfg.setdefault("format", "zarr2")
+    # `format` was the pre-rename name for `input_format`. Rejected rather than ignored:
+    # silently defaulting to zarr2 would read an n5 store as the wrong driver.
+    if "format" in cfg:
+        raise ValueError("`format` is now `input_format` (and `output_format` for the "
+                         "output); rename it in LocalPreferences.toml")
+    cfg.setdefault("input_format", "zarr2")
+    # `output_format` defaults to the input's: same format in and out unless asked.
+    cfg.setdefault("output_format", cfg["input_format"])
     cfg.setdefault("stats_scale", 2)
-    if cfg["format"] == "tiff":
+    if cfg["input_format"] == "tiff":
         raise ValueError(
-            "format = 'tiff' would set input_format too, and tiff cannot be read; "
-            "set output_format = 'tiff' and leave format/input_format as the input's")
-    cfg["input_format"] = cfg.get("input_format", cfg["format"])
-    cfg["output_format"] = cfg.get("output_format", cfg["format"])
+            "input_format = 'tiff', but tiff cannot be read; set output_format = 'tiff' "
+            "and leave input_format as the input's")
     # Separate tuples: `tiff` can be written but not read (see formats.OUTPUT_FORMATS).
     for key, allowed in (("input_format", FORMATS), ("output_format", OUTPUT_FORMATS)):
         if cfg[key] not in allowed:

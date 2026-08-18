@@ -31,7 +31,7 @@ def experiment(tmp_path, monkeypatch):
         output_basic_path=store["output_basic_path"],
         results_root=str(tmp_path / "results"),
         qstacks_dir=str(tmp_path / "qstacks"),
-        format="zarr2",
+        input_format="zarr2",
         last_setup=2,
         setups_per_camera=3,
         chunk_size=[32, 32, 32],
@@ -98,7 +98,7 @@ def test_generated_scripts(experiment):
 
     stats_sh = (experiment / "bsub_command.sh").read_text()
     # 4 chunks at chunks_per_job=2 -> 2 array elements, one camera.
-    assert 'bsub -J "spotlight-stats[1-2]%100"' in stats_sh
+    assert 'bsub -J "spotlight-stats[1-2]%2"' in stats_sh
     assert "-n 2 -P testproj" in stats_sh
     assert "python -m spotlight stats 0" in stats_sh
     # The shell arithmetic must survive quoting -- these expand in the JOB's shell, and
@@ -111,7 +111,7 @@ def test_generated_scripts(experiment):
     assert "PYTHONPATH" not in stats_sh
 
     corr_sh = (experiment / "bsub_correction.sh").read_text()
-    assert 'bsub -J "spotlight-correct[1-3]%100"' in corr_sh     # last_setup=2 -> 3 setups
+    assert 'bsub -J "spotlight-correct[1-3]%3"' in corr_sh     # last_setup=2 -> 3 setups
     # Pinned, not `auto`: a stale intensity_target.json must not silently turn the
     # flat/dark stage into a joint one.
     assert "python -m spotlight correct $(($LSB_JOBINDEX-1)) --mode basic" in corr_sh
@@ -131,7 +131,7 @@ def test_generated_scripts_with_explicit_setup_ids(experiment):
     main(["submit", "correct"])
     text = (experiment / "bsub_correction.sh").read_text()
     assert "S=(171 172 201 202 203)" in text
-    assert 'bsub -J "spotlight-correct[1-5]%100"' in text
+    assert 'bsub -J "spotlight-correct[1-5]%5"' in text
     assert "${S[$(($LSB_JOBINDEX-1))]}" in text
 
 

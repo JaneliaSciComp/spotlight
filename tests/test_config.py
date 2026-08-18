@@ -15,7 +15,7 @@ def _cd(tmp_path):
 def test_writes_the_new_table_only(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     config.set_config(input_basic_path="/data/x.zarr", results_root="/res",
-                      last_setup=8, setups_per_camera=9, format="zarr3")
+                      last_setup=8, setups_per_camera=9, input_format="zarr3")
     text = Path("LocalPreferences.toml").read_text()
     assert "[spotlight]" in text
     assert "BigFlatFieldIlluminator" not in text
@@ -31,7 +31,7 @@ def test_reads_a_legacy_table(tmp_path, monkeypatch):
         'input_basic_path = "/data/y.zarr"\n'
         'results_root = "/res"\n'
         "last_setup = 3\n"
-        'format = "n5"\n'
+        'input_format = "n5"\n'
     )
     cfg = config.load_config()
     assert cfg["input_basic_path"] == "/data/y.zarr"
@@ -62,7 +62,7 @@ def test_defaults_match_the_julia_ones(tmp_path, monkeypatch):
     assert cfg["stats_scale"] == 2
     assert cfg["basic_stats_level"] == 0
     assert cfg["chunks_per_job"] == 64
-    assert cfg["max_concurrent_jobs"] == 100
+    assert cfg["max_concurrent_cores"] == 2000
     assert cfg["qstacks_dir"] == "qstacks"
     assert cfg["basic_unmix_empty"] is False
 

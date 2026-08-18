@@ -23,7 +23,8 @@ from scipy.fft import dctn, idctn
 from . import config as _config
 from . import qstack as _qstack
 
-__all__ = ["basic_estimate", "run_basic", "run_basic_camera", "imresize"]
+__all__ = ["basic_estimate", "run_basic", "run_basic_camera", "imresize",
+           "autotune_lambda", "autotune_cost"]
 
 
 # ─── Orthonormal 2D DCT-II ────────────────────────────────────────────────────
@@ -98,16 +99,24 @@ def imresize(a, out_shape):
 # ─── Core algorithm ───────────────────────────────────────────────────────────
 
 
-def _auto_lambda(mean_img, h, w, lam, lam_dark):
-    """Lambdas from the L1 of the mean image's DCT, when not supplied.
+# The 800/2000 constants below are calibrated for a 128x128 working image, so `l1_dct` is
+# always computed at this size regardless of `working_size` -- the threshold/DC ratio then
+# depends only on N, not on H*W. `autotune_lambda` fits its candidates at the same size for
+# the same reason: it makes the multiplier it picks transferable to the real working grid.
+LAMBDA_CAL_SIZE = 128
 
-    The 800/2000 constants are calibrated for a 128x128 working image, so `l1_dct` is
-    always computed at 128x128 regardless of `working_size` -- the threshold/DC ratio
-    then depends only on N, not on H*W.
-    """
+
+def _l1_dct(mean_img, h, w):
+    """L1 of the mean image's DCT at the lambda calibration size."""
+    cal = (LAMBDA_CAL_SIZE, LAMBDA_CAL_SIZE)
+    m = mean_img if (h, w) == cal else imresize(mean_img, cal)
+    return float(np.abs(dct2_ortho(m)).sum())
+
+
+def _auto_lambda(mean_img, h, w, lam, lam_dark):
+    """Lambdas from the L1 of the mean image's DCT, when not supplied."""
     if lam == 0.0 or lam_dark == 0.0:
-        m = mean_img if (h == 128 and w == 128) else imresize(mean_img, (128, 128))
-        l1_dct = float(np.abs(dct2_ortho(m)).sum())
+        l1_dct = _l1_dct(mean_img, h, w)
         lam = l1_dct / 800.0 if lam == 0.0 else lam
         lam_dark = l1_dct / 2000.0 if lam_dark == 0.0 else lam_dark
     return np.float32(lam), np.float32(lam_dark)
@@ -371,6 +380,156 @@ def basic_estimate(images, *, lam=0.0, lambda_darkfield=0.0, estimate_darkfield=
     return flatfield.astype(np.float32), (a_offset * global_mean).astype(np.float32)
 
 
+# ─── Autotune ─────────────────────────────────────────────────────────────────
+#
+# Ports the lambda selection from BaSiCPy (Peng lab, bioRxiv 2026.04.28.721386), which
+# reports that lambda "has the largest impact on the correction outcome" and is dataset
+# dependent -- it varies "across experimental setups, imaging modalities, and even
+# acquisition sessions of the same microscope". Too low and foreground texture leaks into
+# the flat field; too high and real vignetting is smoothed away. The l1/800 default is one
+# point on that curve, not the right one for every camera.
+#
+# Only the SOLVER-FREE part of that paper is taken: this picks `lam` and then hands it to
+# the existing `basic_estimate`, so the fit itself -- and its parity with the Julia
+# version -- is untouched. Their other contribution (mask-guided reweighting) is not here.
+#
+# The score is theirs, with their constants: a hinge on how much high-frequency structure
+# ended up in the flat field, plus the entropy of the corrected histogram, which is what
+# stops the hinge from simply choosing the smoothest possible field.
+
+AUTOTUNE_COARSE = (0.01, 0.1, 0.5, 2.0, 8.0, 10.0)
+AUTOTUNE_FINE = (0.01, 0.1, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0, 4.0, 5.0,
+                 6.0, 7.0, 8.0, 10.0)
+_FOURIER_RADIUS = 10.0     # DCT coefficients inside this radius are the flat field proper
+_FOURIER_TAU = 0.1         # amplitude counted as high-frequency structure
+_FOURIER_HINGE = 1e-3      # fraction tolerated before the term costs anything
+_FOURIER_COEF = 1e4        # scales that fraction to the entropy term's magnitude
+_ENTROPY_BINS = 1000
+_VMIN_FACTOR = 0.6
+_VRANGE_FACTOR = 1.5
+
+
+def fourier_l0(flat):
+    """Fraction of the flat field's high-frequency DCT coefficients above `_FOURIER_TAU`.
+
+    Small means smooth; large means foreground texture or noise leaked into the field.
+
+    Two conversions from the reference implementation. `_FOURIER_TAU` is calibrated
+    against scipy's UNNORMALISED `dctn`, so the orthonormal transform used everywhere else
+    in this module is scaled up by the ortho->unnormalised factor for a coefficient with
+    both indices non-zero -- which is every coefficient counted here, since the u=0 and
+    v=0 edges are excluded. And BaSiCPy compares the SIGNED coefficient to the threshold
+    while the paper says amplitude; a sign-asymmetric count measures nothing, so this
+    takes the modulus.
+    """
+    cal = (LAMBDA_CAL_SIZE, LAMBDA_CAL_SIZE)
+    f = flat if flat.shape == cal else imresize(flat, cal)
+    n_rows, n_cols = f.shape
+    coeff = np.abs(dct2_ortho(f)) * (2.0 * np.sqrt(n_rows * n_cols))
+    u = np.arange(n_rows)[:, None]
+    v = np.arange(n_cols)[None, :]
+    outside = ((u ** 2 + v ** 2) > _FOURIER_RADIUS ** 2) & (u > 0) & (v > 0)
+    return float((coeff[outside] > _FOURIER_TAU).sum()) / float(outside.sum())
+
+
+def histogram_entropy(values, vmin, vmax):
+    """Shannon entropy of the histogram of `values` over the FIXED range [vmin, vmax].
+
+    Shading broadens the intensity histogram; a well-corrected stack has a compact one
+    with concentrated background. The range has to be held fixed across candidates or the
+    comparison is meaningless -- a narrower one lowers the entropy just by concentrating
+    the distribution, a wider one raises it just by dispersing the counts.
+    """
+    v = values[(values >= vmin) & (values <= vmax)]
+    if v.size == 0 or not vmax > vmin:
+        return np.inf
+    p, edges = np.histogram(v, bins=_ENTROPY_BINS, range=(vmin, vmax), density=True)
+    p = p[p > 0]
+    return float(-(p * np.log(p)).sum() * (edges[1] - edges[0]))
+
+
+def autotune_cost(corrected, flat, v_range):
+    """Entropy of the corrected stack plus the hinged high-frequency cost of `flat`.
+
+    `v_range` is fixed once by the caller from the default-lambda fit; the window's lower
+    edge tracks each candidate's own background so the histogram stays aligned with it.
+    """
+    vmin = float(np.quantile(corrected, 0.01)) * _VMIN_FACTOR
+    hinge = max(0.0, fourier_l0(flat) - _FOURIER_HINGE) * _FOURIER_COEF
+    return histogram_entropy(corrected, vmin, vmin + v_range) + hinge
+
+
+def _autotune_corrected(stack, flat, dark):
+    """What the apply stages would produce: max((raw - dark) / flat, 0).
+
+    Unlike `BasicModel.correct` this guards the division. A deliberately bad candidate
+    lambda can leave zeros in the flat field, and one inf would poison the histogram --
+    where the real apply path only ever sees the field that was actually selected.
+    """
+    flat = np.maximum(flat, np.finfo(np.float32).eps)
+    return np.maximum((stack - dark[:, :, None]) / flat[:, :, None], 0.0)
+
+
+def autotune_lambda(images, *, coarse=AUTOTUNE_COARSE, fine=AUTOTUNE_FINE, **fit_kwargs):
+    """Pick `lam` for this stack by grid search. Returns `(lam, multiplier)`.
+
+    Candidates are multiples of the `l1_dct/800` default, so the search is over the same
+    quantity `_auto_lambda` would have chosen and a multiplier of 1.0 reproduces it.
+    Deterministic two stages, as published: score the coarse grid, then bracket the winner
+    with its better neighbour and score the fine grid inside that bracket.
+
+    ponytail: candidates are fitted at `LAMBDA_CAL_SIZE` whatever `working_size` says,
+    which bounds the cost at ~11 small fits per camera instead of ~11 full-resolution
+    ones. The multiplier transfers because `_auto_lambda` derives lambda from `l1_dct` at
+    that same size on any grid. Fit candidates at the real working grid if a camera ever
+    disagrees with its own downsampling.
+    """
+    images = np.ascontiguousarray(images, dtype=np.float32)
+    cal = (LAMBDA_CAL_SIZE, LAMBDA_CAL_SIZE)
+    small = np.stack([imresize(images[:, :, k], cal) for k in range(images.shape[2])],
+                     axis=2)
+    mean_img = small.mean(axis=2) / np.float32(small.mean())
+    lam_default = _l1_dct(mean_img, *cal) / 800.0
+    fit = dict(fit_kwargs, working_size=0, output_size=None)
+
+    def fit_candidate(mult):
+        flat, dark = basic_estimate(small, lam=mult * lam_default, **fit)
+        return _autotune_corrected(small, flat, dark), flat
+
+    # The window width comes from the default-lambda correction and is then held fixed.
+    ref_corrected, ref_flat = fit_candidate(1.0)
+    vmin_ref, vmax_ref = np.quantile(ref_corrected, [0.01, 0.99])
+    v_range = float((vmax_ref - vmin_ref * _VMIN_FACTOR) * _VRANGE_FACTOR)
+
+    costs = {1.0: autotune_cost(ref_corrected, ref_flat, v_range)}
+
+    def cost(mult):
+        if mult not in costs:
+            costs[mult] = autotune_cost(*fit_candidate(mult), v_range)
+        return costs[mult]
+
+    for mult in coarse:
+        cost(mult)
+    best = min(coarse, key=cost)
+    i = coarse.index(best)
+    neighbours = [coarse[j] for j in (i - 1, i + 1) if 0 <= j < len(coarse)]
+    lo, hi = sorted((best, min(neighbours, key=cost)))
+    for mult in fine:
+        if lo <= mult <= hi:
+            cost(mult)
+
+    # Over every candidate scored, not just the bracket: 1.0 is always fitted to fix
+    # `v_range`, so if it beats the bracket it was measured to, on this same cost.
+    best = min(costs, key=costs.get)
+    # Reports only -- an edge winner is a plausible answer, just an unconfirmed one, and
+    # widening the grid is the operator's call.
+    if best in (min(fine), max(fine)):
+        print(f"warning: BaSiC autotune chose {best:g}x, the edge of its grid, so the "
+              "best lambda may lie outside it. Pass a wider grid, or set `lambda` by hand "
+              "to pin one.")
+    return best * lam_default, best
+
+
 # ─── Driver ───────────────────────────────────────────────────────────────────
 
 # A fitted darkfield below this fraction of the MEASURED background is treated as
@@ -470,13 +629,29 @@ def run_basic_camera(cfg, camera, params=None):
         print(f"warning: qstack frame {images.shape[:2]} does not match "
               f"basic_stats_level={lvl} (expected {tuple(expected)}); it may be stale -- "
               "rerun save_qstack()")
+    # Autotune only when no lambda was asked for: a lambda in the config is a lambda the
+    # operator chose, and searching around it would silently discard that choice.
+    lam = params["lambda"]
+    if params["autotune"] and lam == 0.0:
+        lam, mult = autotune_lambda(
+            images,
+            darkfield_override=override,
+            lambda_darkfield=params["lambda_darkfield"],
+            estimate_darkfield=params["estimate_darkfield"],
+            max_iterations=params["max_iterations"],
+            optimization_tol=params["optimization_tol"],
+            reweight_tol=params["reweight_tol"],
+            max_reweighting_iterations=params["max_reweighting_iterations"],
+            epsilon=params["epsilon"],
+        )
+        print(f"BaSiC: autotuned lambda = {lam:.5g} ({mult:g}x the l1/800 default)")
     print(f"BaSiC: estimating camera {camera + 1}, stack {images.shape}, "
           f"darkfield_override={override}, output_size={out_size}")
     flatfield, darkfield = basic_estimate(
         images,
         darkfield_override=override,
         output_size=out_size,
-        lam=params["lambda"],
+        lam=lam,
         lambda_darkfield=params["lambda_darkfield"],
         estimate_darkfield=params["estimate_darkfield"],
         max_iterations=params["max_iterations"],

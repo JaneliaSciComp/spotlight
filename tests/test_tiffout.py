@@ -182,20 +182,20 @@ def test_output_format_tiff_validates_and_input_format_tiff_does_not(tmp_path, m
     common = ('results_root = "r"\ninput_intensity_path = "i"\n'
               'output_intensity_path = "o"\n')
     (tmp_path / "LocalPreferences.toml").write_text(
-        f'[spotlight]\n{common}format = "zarr2"\noutput_format = "tiff"\n')
+        f'[spotlight]\n{common}input_format = "zarr2"\noutput_format = "tiff"\n')
     assert config.load_config()["output_format"] == "tiff"
 
     (tmp_path / "LocalPreferences.toml").write_text(
-        f'[spotlight]\n{common}format = "zarr2"\ninput_format = "tiff"\n')
-    with pytest.raises(ValueError, match="input_format"):
+        f'[spotlight]\n{common}input_format = "tiff"\n')
+    with pytest.raises(ValueError, match="cannot be read"):
         config.load_config()
 
 
-def test_a_bare_format_tiff_is_rejected_because_it_would_set_the_input_too(
-        tmp_path, monkeypatch):
+def test_the_pre_rename_format_key_is_rejected_not_ignored(tmp_path, monkeypatch):
+    """Ignoring it would read an n5 store with the zarr2 default -- the wrong driver."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "LocalPreferences.toml").write_text(
         '[spotlight]\nresults_root = "r"\ninput_intensity_path = "i"\n'
-        'output_intensity_path = "o"\nformat = "tiff"\n')
-    with pytest.raises(ValueError, match="cannot be read"):
+        'output_intensity_path = "o"\nformat = "n5"\n')
+    with pytest.raises(ValueError, match="input_format"):
         config.load_config()
