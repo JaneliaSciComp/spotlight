@@ -243,26 +243,6 @@ def open_target(cfg, setup, size_xyz, ctx=None):
 # discovery both the writers and the readers size themselves from.
 
 
-# Scicomp's contract: the host's 1-minute load average must stay under this multiple of
-# the slots LSF reserved for the job. Load counts threads that are RUNNABLE *or* in
-# uninterruptible sleep, so a thread parked in a network-filesystem call is charged exactly
-# like one burning a core -- there is no free I/O concurrency.
-#
-# The budget below therefore has to cover every pool at once, and it is spent:
-#
-#     slots()      the numpy kernel's ThreadPoolExecutor -- the stage's actual compute
-#     slots() // 2 `data_copy_concurrency`  -- chunk decode/encode (zstd), also CPU
-#     slots() // 2 `file_io_concurrency`    -- threads parked in a filesystem call
-#     ---------
-#     2 x slots()
-#
-# What this replaced was `file_io_concurrency = slots() * 64`, which at 30 slots is 1920
-# threads: measured 2165 at peak on one correction element, 72x its allocation. The 64x
-# multiplier was reasoning about the small end -- file opens are latency-bound and a stage
-# may hold only 3 slots -- but useful I/O concurrency is a property of the filesystem's
-# latency x bandwidth, not of how many cores a stage asked for, and nothing about it
-# entitles the job to threads it did not reserve.
-#
 # Thread pool sizes, chosen by measurement rather than arithmetic. Scicomp's contract is
 # that a host's 1-minute load average stays under 2x the slots LSF reserved, and load counts
 # threads that are RUNNABLE *or* in uninterruptible sleep -- so a thread parked in a network
