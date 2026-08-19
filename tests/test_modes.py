@@ -110,9 +110,12 @@ def test_both_mode_requires_the_raw_store(tmp_path):
 
 
 def test_both_mode_accepts_matching_inputs(tmp_path):
-    v = correct._view(_cfg(tmp_path), "both")
+    cfg = _cfg(tmp_path)
+    v = correct._view(cfg, "both")
     assert v["apply_basic"] is True
-    assert v["input_intensity_path"] == v["input_intensity_path"]
+    # The invariant the mode rests on: one store, read once. (This line used to compare
+    # `v["input_intensity_path"]` to itself, so it asserted nothing.)
+    assert v["input_intensity_path"] == cfg["input_basic_path"]
 
 
 def test_int_apply_is_an_alias_for_correct(tmp_path, monkeypatch):

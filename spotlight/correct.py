@@ -337,8 +337,7 @@ async def _run(cfg, setup, requested):
     # the event loop and serializes every shard's compute onto one core no matter how
     # many were asked for. In a thread pool, numpy's GIL-releasing array ops overlap
     # across cores while asyncio keeps the reads flowing.
-    # Sized from the reservation, like tensorstore's two pools; see the table above
-    # `stores.slots` for how the three of them add up against the load contract.
+    # Sized from the reservation, like tensorstore's two pools -- see `stores.slots`.
     n_cores = stores.slots(_config.stage_cores(view, mode))
     pool = ThreadPoolExecutor(max_workers=n_cores)
     timing = {"t_read": 0.0, "t_compute": 0.0, "t_write": 0.0, "bytes_in": 0,

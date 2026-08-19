@@ -32,43 +32,16 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 def runner():
     """The command that runs a spotlight stage inside this checkout's pixi environment.
 
-    The manifest path is derived from `__file__` rather than configured, so a moved
-    checkout fixes itself the next time the scripts are regenerated.
+    The manifest path is derived from `__file__` rather than configured, so a moved checkout
+    fixes itself the next time the scripts are regenerated. `spotlight` comes from the
+    environment -- a `[pypi-dependencies]` entry installed editable, so `pixi run` alone puts
+    it on the path; run `pixi install` after moving or first cloning.
 
-    MALLOC_ARENA_MAX caps glibc's per-thread malloc arenas. The stages run hundreds of
-    threads (tensorstore's `file_io_concurrency` alone is `cores * 64`) and churn numpy
-    temporaries in all of them; by default glibc gives each thread its own arena and the
-    freed memory stays resident. Measured on the stats stage, both arms on one host: peak
-    RSS 49.1 GB uncapped against 5.8 GB at 4, and the capped arm was slightly FASTER (210 s
-    vs 227 s, 477 s of CPU against 512 s) -- there is no arena contention to trade away.
-    That 43 GB was retention, not working set; `bytes_per_setup` had the real figure right
-    all along.
-
-    It has to be set in the ENVIRONMENT, ahead of the process: glibc reads it when it
-    creates the first arena, long before `__main__` runs, so assigning `os.environ` inside
-    Python is too late to do anything. Measured on the stats stage only, hence the
-    `:-` default -- a stage with more cores and fewer threads can override it from the
-    submitting shell without editing this.
-
-    `spotlight` itself comes from the environment -- it is a `[pypi-dependencies]` entry
-    installed editable, so `pixi run` alone puts it on the path. Run `pixi install` after
-    moving or first cloning the checkout, or the stages will not import.
-
-    There are deliberately NO OMP_NUM_THREADS / OPENBLAS_NUM_THREADS caps here, and that
-    is a measurement rather than an oversight. They look like they belong: each of those
-    libraries sizes its pool from the HOST's logical core count rather than the LSF
-    allocation, so a 30-slot element on a 128-core host opens 128 BLAS threads before doing
-    any work -- which is what put 187 threads in the resource summary of elements that died
-    in `load_config()` having read nothing. But those threads sit in INTERRUPTIBLE sleep,
-    and the load average counts only runnable and uninterruptible ones, so capping them
-    moves no number LSF cares about. Measured with `bench/sweep_threads.py correct` at 64
-    slots: peak runnable-or-blocked 1157 uncapped against 1245 capped -- i.e. worse, inside
-    the noise -- while `file_io_concurrency` alone took the same stage to 70, i.e. 1.1x the
-    allocation. The caps buy
-    ~64 fewer idle threads in `ps` and nothing else, so they are not here. See the table above
-    `stores.slots` for the two knobs that did move it. A stage with real linear algebra --
-    `basic`, whose BaSiC fit is an SVD -- was never measured, so if one ever needs these,
-    measure before adding: an env var in this string is charged to every stage.
+    MALLOC_ARENA_MAX caps glibc's per-thread malloc arenas, which otherwise retain every
+    thread's freed numpy temporaries. It has to be in the ENVIRONMENT ahead of the process:
+    glibc reads it when it creates the first arena, long before `__main__`. The `:-` default
+    lets the submitting shell override it. There are deliberately no BLAS/OpenMP caps beside
+    it -- those were measured and rejected. Both, plus the numbers: CLAUDE.md.
     """
     return ('MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-4} '
             f"pixi run --manifest-path {PACKAGE_ROOT} python -m spotlight")

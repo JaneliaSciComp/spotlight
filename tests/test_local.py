@@ -173,13 +173,8 @@ def test_stats_arrays_are_created_up_front_and_zero_byte_metadata_is_rebuilt(exp
 
 
 def test_the_output_pyramid_matches_a_numpy_downsample(tmp_path, monkeypatch):
-    """The pyramid is written slab by slab, so an off-by-one in the slab loop would leave
-    a shifted, duplicated or zeroed band that only a value check catches -- and the
-    default test store has no level 1 at all, so nothing else here runs this code.
-
-    `shard_size` z is 16 against a 31-plane level 1 on purpose: two slabs plus a short
-    tail, which is where a slab loop goes wrong if it is going to.
-    """
+    """The default test store has no level 1, so nothing else here runs the pyramid write at
+    all. A shifted, duplicated or zeroed band only shows up in a value check."""
     from make_store import volume
     from spotlight.formats import _SPEC, _in_order, canonical_view
     from spotlight.stores import _context, open_output_array, write_group_metadata

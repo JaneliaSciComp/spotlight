@@ -243,44 +243,12 @@ def open_target(cfg, setup, size_xyz, ctx=None):
 # discovery both the writers and the readers size themselves from.
 
 
-# Thread pool sizes, chosen by measurement rather than arithmetic. Scicomp's contract is
-# that a host's 1-minute load average stays under 2x the slots LSF reserved, and load counts
-# threads that are RUNNABLE *or* in uninterruptible sleep -- so a thread parked in a network
-# filesystem call is charged exactly like one burning a core. There is no free I/O
-# concurrency, which is what makes this a budget rather than a preference.
-#
-# `bench/sweep_threads.py correct 0` at 64 slots -- peak threads runnable-or-blocked (which
-# IS the load) against wall clock:
-#
-#     file_io   data_copy   peak busy   / slots   wall
-#     slots*64     slots         1157     18.1x   44.1 s   the behaviour that drew the email
-#     slots*16   slots/2         1045     16.3x   53.7 s
-#     slots*4    slots/2          295      4.6x   50.4 s
-#     slots/2    slots/2           71      1.1x   49.4 s
-#     slots      slots/2          102      1.6x   48.6 s
-#     slots/2      slots          104      1.6x   44.6 s   <-- what this uses
-#     slots        slots          138      2.2x   44.3 s   over the contract
-#
-# The two pools are not interchangeable, and only measuring separated them:
-#
-# * `file_io_concurrency` buys NO throughput at all. 32 -> 64 -> 256 -> 1024 went 49.4 ->
-#   48.6 -> 50.4 -> 53.7 s, flat then worse, while costing load the whole way. The `slots*64`
-#   multiplier this replaced was not paying for itself even before anyone mentioned load: at
-#   30 slots it was 1920 threads, and one correction element peaked at 2165 -- 72x its
-#   allocation. Half the slots is enough to keep an unsharded n5 source's opens overlapping.
-# * `data_copy_concurrency` is where the time was. It is zstd decode and encode -- real CPU
-#   work on cores the job reserved -- and halving it cost 11% wall clock (49.4 vs 44.6 s) for
-#   33 threads of load. Full slots recovers all of it and still lands at 1.6x, because a
-#   read, its decode and the kernel's pass over the result do not peak together: the
-#   worst-case sum is 2.5x slots and the measured peak is 1.6x.
-#
-# The honest consequence: under a load-vs-slots contract, concurrency is bought with SLOTS.
-# A stage that wants more reads in flight raises its `bsub -n` (`n_cores_stats` and friends),
-# not a multiplier. The stats stage drops from 192 in-flight opens to 2 at 3 slots, and it is
-# the stage the old multiplier was tuned for, holding a twentieth of the slots -- so it will
-# cost more than the numbers above. That one is still UNMEASURED:
-# `bench/sweep_threads.py stats <camera> <start> <stop>`. `SPOTLIGHT_IO_CONCURRENCY` and
-# `SPOTLIGHT_COPY_CONCURRENCY` override either pool for a one-off.
+# Thread pool sizes, measured rather than derived. LSF's contract is load vs RESERVED
+# SLOTS, and Linux load counts threads that are runnable OR in uninterruptible sleep -- so a
+# thread parked in an NFS call costs the same as one burning a core. `data_copy` (zstd, real
+# CPU) gets the full reservation; `file_io` gets half, because raising it buys no throughput
+# at all. Measured 1.6x slots against 18.1x before. Table, dead ends and how to re-measure:
+# CLAUDE.md, "The cluster contract"; harness: bench/sweep_threads.py.
 
 
 def slots(default=8):
@@ -290,10 +258,9 @@ def slots(default=8):
     measured against the same number.
 
     `default` applies only OFF the cluster and should come from `config.stage_cores` -- the
-    `bsub -n` the stage would have been submitted with. It is CLAMPED to the machine's core
-    count there, and only there: off the cluster there is no reservation to honour, so the
-    box is the constraint, and a 20-core default would otherwise oversubscribe a laptop
-    fourfold. LSF's own number is never clamped -- a 30-slot job on a 128-core host means 30.
+    `bsub -n` the stage would have been submitted with. It is clamped to the machine there,
+    and only there: with no reservation to honour the box is the constraint. LSF's own number
+    is never clamped -- a 30-slot job on a 128-core host means 30.
     """
     reserved = os.getenv("LSB_DJOB_NUMPROC")
     if reserved:
@@ -302,12 +269,10 @@ def slots(default=8):
 
 
 def _context_spec():
-    # Not `config.stage_cores`: `_context()` is memoised process-wide and called from every
-    # stage without a cfg in hand, so there is no stage to attribute it to. Off-cluster the
-    # machine is the only honest bound anyway, which is what `slots` clamps to.
+    # Not `config.stage_cores`: `_context()` is memoised process-wide and called without a
+    # cfg in hand, so there is no stage to attribute it to. Floored at 2 so a 1-slot job
+    # still overlaps one read with one decode rather than serialising against itself.
     n = slots(os.cpu_count() or 8)
-    # Floored at 2 so a 1-slot job still overlaps one read with one decode rather than
-    # serialising against itself. See the table above for why these two differ.
     io = int(os.getenv("SPOTLIGHT_IO_CONCURRENCY", str(max(2, n // 2))))
     copy = int(os.getenv("SPOTLIGHT_COPY_CONCURRENCY", str(max(2, n))))
     return {

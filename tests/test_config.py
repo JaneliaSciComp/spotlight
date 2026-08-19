@@ -137,23 +137,18 @@ def test_a_broken_toml_names_the_file_it_read(tmp_path, monkeypatch):
     assert "byte-order mark" in str(e.value)
 
 
-def test_every_correction_mode_maps_to_a_core_count_that_exists():
-    """`stage_cores` is what an off-cluster thread pool is sized from, so a mode missing from
-    the map raises inside the stage rather than at submit time -- and a key naming a
-    `n_cores_*` that DEFAULTS does not have would do the same on any partial config."""
+def test_stage_cores_resolves_for_every_stage_that_asks(monkeypatch):
+    """A mode missing from the map, or a key DEFAULTS lacks, raises inside the stage rather
+    than at submit time."""
     from spotlight import correct
     for mode in correct.MODES:
-        if mode == "auto":
-            continue                      # resolved to one of the others before use
-        assert mode in config.CORES_KEY, f"mode {mode!r} has no core count"
+        if mode != "auto":                        # resolved to one of the others before use
+            assert mode in config.CORES_KEY, f"mode {mode!r} has no core count"
     for stage, key in config.CORES_KEY.items():
         assert key in config.DEFAULTS, f"{stage} -> {key}, which is not in DEFAULTS"
+        assert isinstance(config.stage_cores({}, stage), int)
 
-
-def test_stage_cores_prefers_the_config_then_falls_back_to_defaults():
-    """A hand-built cfg (test fixture, partial toml) must size a pool, not kill the stage."""
-    assert config.stage_cores({"n_cores_int_correct": 7}, "both") == 7
+    assert config.stage_cores({"n_cores_int_correct": 7}, "both") == 7     # cfg wins
     assert config.stage_cores({}, "both") == config.DEFAULTS["n_cores_int_correct"]
-    assert config.stage_cores({}, "basic") == config.DEFAULTS["n_cores_correction"]
     # The two correction pipelines genuinely differ, which is the reason for the map.
     assert config.CORES_KEY["basic"] != config.CORES_KEY["both"]

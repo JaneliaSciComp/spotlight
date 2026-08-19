@@ -238,15 +238,8 @@ def test_stats_concurrency_rises_with_the_allocation(monkeypatch):
 
 
 def test_the_two_pools_are_sized_from_the_reservation_and_differ(monkeypatch):
-    """Pinned because the pair is a MEASUREMENT, and the two halves are not interchangeable.
-
-    Sized against slots, since load is charged per reserved slot and a thread parked in an
-    NFS call counts like one burning a core. But `bench/sweep_threads.py correct 0` at 64
-    slots separated them: file_io went 32 -> 64 -> 256 -> 1024 for 49.4 -> 48.6 -> 50.4 ->
-    53.7 s (flat then worse) while data_copy at half cost 11% wall clock outright. So file_io
-    stays at half and data_copy gets the lot -- 1.6x measured load, against 18.1x before.
-    Symmetrical-looking limits here would be a regression that reads like tidying.
-    """
+    """The asymmetry is a measurement, so making these symmetric is a regression that reads
+    like tidying. Numbers: CLAUDE.md, "Why data_copy = slots but file_io = slots // 2"."""
     monkeypatch.delenv("SPOTLIGHT_IO_CONCURRENCY", raising=False)
     monkeypatch.delenv("SPOTLIGHT_COPY_CONCURRENCY", raising=False)
 
@@ -257,27 +250,24 @@ def test_the_two_pools_are_sized_from_the_reservation_and_differ(monkeypatch):
         assert spec["data_copy_concurrency"]["limit"] == n
         assert stores.slots() == n, "the kernel pool must size from the same number"
 
-    # A 1-slot job would otherwise get a limit of 0 and serialise against itself.
+    # A 1-slot job would otherwise get 0 and serialise against itself.
     monkeypatch.setenv("LSB_DJOB_NUMPROC", "1")
     spec = stores._context_spec()
-    assert spec["file_io_concurrency"]["limit"] == 2
-    assert spec["data_copy_concurrency"]["limit"] == 2
+    assert (spec["file_io_concurrency"]["limit"],
+            spec["data_copy_concurrency"]["limit"]) == (2, 2)
 
-
-def test_both_tensorstore_limits_stay_overridable(monkeypatch):
-    """Scicomp may agree to more load for a one-off; that must not need a code change."""
+    # Overridable, because scicomp may agree to more load for a one-off.
     monkeypatch.setenv("LSB_DJOB_NUMPROC", "30")
     monkeypatch.setenv("SPOTLIGHT_IO_CONCURRENCY", "48")
     monkeypatch.setenv("SPOTLIGHT_COPY_CONCURRENCY", "7")
     spec = stores._context_spec()
-    assert spec["file_io_concurrency"]["limit"] == 48
-    assert spec["data_copy_concurrency"]["limit"] == 7
+    assert (spec["file_io_concurrency"]["limit"],
+            spec["data_copy_concurrency"]["limit"]) == (48, 7)
 
 
 def test_one_definition_of_the_slot_count(monkeypatch):
-    """The total only means something if every pool sizes itself from the same number, so
-    nothing may read LSB_DJOB_NUMPROC on its own. The differing defaults are deliberate --
-    they apply only off-cluster, where there is no reservation to honour."""
+    """The pools only add up if they all size from one number, so nothing may read
+    LSB_DJOB_NUMPROC on its own."""
     import pathlib
     src = pathlib.Path(stores.__file__).parent
     # The variable NAME is fine anywhere -- prose mentions it, and `scripts.runner()` puts
