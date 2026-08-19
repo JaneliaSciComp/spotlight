@@ -222,14 +222,41 @@ def create_quartile_histograms(cfg=None):
         lines.append(_bsub(cfg, "spotlight-stats", cfg["n_cores_stats"], f"qstack_{c + 1}",
                            cmd, array=num_jobs, n_arrays=len(cameras)))
 
-    # Clear the previous run's background-quantile partials. They are summed blind, so a
-    # stale file -- from a run over different setups, or from a job whose chunk range this
-    # run splits differently -- would skew the profile rather than fail.
-    from .quantiles import background_quantile_dir
+    # Clear a camera's background-quantile partials only when THIS run would not reproduce
+    # them. They are summed blind, so a partial from a different tiling or a different setup
+    # list skews the profile rather than failing -- but clearing unconditionally threw away
+    # finished cameras every time an unrelated knob (`n_cores_stats`, a log stem) sent
+    # someone back through here to regenerate the script, which is the common case.
+    #
+    # The stamp records what the SUM depends on: which partial files get written
+    # (`chunks_per_job` and the chunk count set the `job{start}.json` keys), and what went
+    # into them (the setup list, the threshold columns are tested against, the pixel
+    # stride). Anything else -- cores, log stems, the LSF project -- leaves the partials
+    # valid, so they survive. A missing or stale stamp clears, so partials from before this
+    # check existed are never trusted.
+    from .quantiles import (BACKGROUND_PIXEL_STRIDE, background_quantile_dir,
+                            empty_threshold)
     for c in cameras:
         d = background_quantile_dir(cfg, c)
+        fp = {"chunks_per_job": per_job, "n_chunks": n_chunks, "level": lvl,
+              "frame": [int(v) for v in size_xy],
+              "chunk_size": [int(v) for v in cfg["chunk_size"][:2]],
+              "setups": [int(x) for x in _config.camera_setups(cfg)[c]],
+              "empty_threshold": empty_threshold(cfg, c),
+              "stride": BACKGROUND_PIXEL_STRIDE}
+        stamp = d / "fingerprint.json"
+        try:
+            unchanged = json.loads(stamp.read_text()) == fp
+        except (OSError, ValueError):
+            unchanged = False
+        if unchanged:
+            print(f"camera {c + 1}: keeping "
+                  f"{len(list(d.glob('job*.json')))} background-quantile partial(s)")
+            continue
         if d.is_dir():
             shutil.rmtree(d)
+        d.mkdir(parents=True)
+        stamp.write_text(json.dumps(fp, sort_keys=True))
 
     # Create every statistic array HERE, once, before the array job goes out. A worker
     # opens with `create=True`, which is harmless when the array already exists but not
@@ -246,14 +273,23 @@ def create_quartile_histograms(cfg=None):
     ctx = stores.context()
     for c in cameras:
         for name in stat_names:
-            d = Path(f'{cfg["results_root"]}/camera{c + 1}/{name}/s{lvl}')
-            # Drop a zero-byte one rather than trying to open it -- and the whole array
-            # with it, so chunks written before the clobber cannot survive into a run that
-            # tiles them differently. Same reasoning as the partials cleared above.
-            if (d / "attributes.json").is_file() and not (d / "attributes.json").stat().st_size:
-                print(f"removing {d}: zero-byte attributes.json from an interrupted create")
-                shutil.rmtree(d)
-            stores.open_stats_array(cfg, c, name, size_xy, scale=lvl, ctx=ctx)
+            # Metadata that exists but will not parse is unopenable AND unrepairable in
+            # place -- tensorstore has to read it to write it -- so hand that array to
+            # `rebuild`, which deletes and recreates it. Narrow on purpose: only a file
+            # that is present and broken. Rebuilding on any open failure would let one
+            # flaky network read discard a camera's finished chunks.
+            meta = stores.stats_array_path(cfg, c, name, lvl) / "attributes.json"
+            broken = False
+            if meta.is_file():
+                try:
+                    broken = not json.loads(meta.read_text())
+                except (OSError, ValueError):
+                    broken = True
+            if broken:
+                print(f"rebuilding {meta.parent}: attributes.json is unreadable "
+                      "(a create race truncated it); its chunks go with it")
+            stores.open_stats_array(cfg, c, name, size_xy, scale=lvl, ctx=ctx,
+                                    rebuild=broken)
     print(f"{len(cameras)} camera(s) x {len(stat_names)} statistic array(s) ready")
 
     _write("bsub_command.sh", "\n".join(lines) + "\n")

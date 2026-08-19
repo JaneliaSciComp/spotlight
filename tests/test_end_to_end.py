@@ -151,13 +151,34 @@ def test_module_entry_point_runs(experiment):
         assert stage in r.stdout
 
 
-def test_background_quantile_partials_are_cleared_on_resubmit(experiment):
-    """They are summed blind, so a stale partial from a previous run would skew the
-    profile rather than fail."""
+def test_background_quantile_partials_are_cleared_only_when_they_would_not_match(experiment):
+    """Both directions, because each failure is silent in its own way.
+
+    Partials are summed blind, so one from a different tiling skews the profile rather than
+    failing. But clearing on every resubmit discarded cameras that were already finished --
+    and regenerating the script after changing an unrelated knob is the common reason to
+    come back through here, so that cost was being paid routinely.
+    """
     from spotlight.quantiles import background_quantile_dir
     cfg = config.load_config()
     d = background_quantile_dir(cfg, 0)
     d.mkdir(parents=True, exist_ok=True)
-    (d / "job99.json").write_text(json.dumps({"sum": [0.0] * 21, "count": 1}))
+    stale = d / "job99.json"
+    stale.write_text(json.dumps({"sum": [0.0] * 21, "count": 1}))
+
+    # Nothing vouches for a partial with no stamp beside it, so it goes.
     main(["submit", "stats"])
-    assert not d.exists()
+    assert not stale.exists(), "an unstamped partial was trusted"
+    assert (d / "fingerprint.json").is_file(), "no stamp written for the next run to check"
+
+    # A partial this run would reproduce survives a resubmit ...
+    keep = d / "job1.json"
+    keep.write_text(json.dumps({"sum": [1.0] * 21, "count": 2}))
+    main(["submit", "stats"])
+    assert keep.is_file(), "a finished camera's partial was discarded"
+
+    # ... and one whose job keys this run splits differently does not. `job1.json` is still
+    # a key the new tiling writes, which is the point: matching filenames is not enough.
+    config.set_config(chunks_per_job=1)
+    main(["submit", "stats"])
+    assert not keep.exists(), "a partial from a different tiling survived"

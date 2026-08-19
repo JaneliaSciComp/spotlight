@@ -22,7 +22,8 @@ from .formats import (
 
 __all__ = [
     "context", "open_source", "source_size_xyz", "camera_source_size_xyz",
-    "open_stats_array", "open_target", "xy_chunks", "ensure_group_json",
+    "open_stats_array", "stats_array_path", "open_target", "xy_chunks",
+    "ensure_group_json",
 ]
 
 
@@ -173,17 +174,31 @@ def xy_chunks(size_xy, tile_xy):
     return out
 
 
-def open_stats_array(cfg, camera, stat, xy_size, scale=0, ctx=None):
+def stats_array_path(cfg, camera, stat, scale=0):
+    """Where one per-camera statistic array lives, for callers that need the path itself.
+
+    One definition, so a caller inspecting the array on disk cannot drift from the one
+    `open_stats_array` hands tensorstore.
+    """
+    return Path(cfg["results_root"]) / f"camera{camera + 1}" / stat / f"s{scale}"
+
+
+def open_stats_array(cfg, camera, stat, xy_size, scale=0, ctx=None, rebuild=False):
     """Create/open one per-camera statistic array: `{results_root}/camera{N}/{stat}/s{scale}`.
 
     Always n5 and always (X, Y), whatever the input format is -- these are this package's
     own intermediates, and `save_qstack` transposes on read for the zarr formats. Camera
     is 1-based on disk, matching what the Julia package wrote.
+
+    `rebuild` throws the array away and makes a fresh one, for metadata that cannot be
+    opened at all (see `create_quartile_histograms`). tensorstore rejects `delete_existing`
+    together with `open`, which is why it is a separate mode rather than an extra flag --
+    and why it must stay opt-in: it discards every chunk already written.
     """
     spec = {
         "driver": "n5",
         "kvstore": {"driver": "file",
-                    "path": f'{cfg["results_root"]}/camera{camera + 1}/{stat}/s{scale}'},
+                    "path": str(stats_array_path(cfg, camera, stat, scale))},
         "metadata": {
             "dimensions": list(xy_size),
             "blockSize": list(cfg["chunk_size"][:2]),
@@ -191,7 +206,9 @@ def open_stats_array(cfg, camera, stat, xy_size, scale=0, ctx=None):
             "compression": {"type": "zstd", "level": 3},
         },
     }
-    return _open(spec, ctx, create=True, open=True)
+    mode = ({"create": True, "delete_existing": True} if rebuild
+            else {"create": True, "open": True})
+    return _open(spec, ctx, **mode)
 
 
 def open_target(cfg, setup, size_xyz, ctx=None):

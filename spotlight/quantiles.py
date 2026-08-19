@@ -161,8 +161,9 @@ def write_background_quantile_partial(cfg, camera, job, acc):
     Per job rather than per camera because the stats pass is an LSF array: each element
     owns a slice of the frame's chunks, and no single element sees enough of the frame to
     be relied on (a job whose chunks all land on specimen finds no empty column at all).
-    `create_quartile_histograms` clears the directory when it writes a new submission
-    script, so a rerun cannot blend its partials with the previous run's.
+    `create_quartile_histograms` clears the directory when it writes a submission
+    script whose partials would not match the ones already there, so a rerun cannot
+    blend two runs' partials -- and leaves finished cameras alone when they would.
     """
     d = background_quantile_dir(cfg, camera)
     d.mkdir(parents=True, exist_ok=True)

@@ -196,7 +196,9 @@ def background_quantile_profile(cfg, camera, n):
         return None
     total = np.zeros(n, dtype=np.float64)
     count = 0
-    for f in sorted(d.glob("*.json")):
+    # `job*.json`, not `*.json`: `create_quartile_histograms` keeps its fingerprint
+    # stamp in this directory, and it is not a partial.
+    for f in sorted(d.glob("job*.json")):
         try:
             rec = json.loads(f.read_text())
             s = np.asarray(rec["sum"], dtype=np.float64)
