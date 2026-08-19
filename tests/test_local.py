@@ -143,3 +143,30 @@ def test_run_pipeline_overrides_a_stale_autodetected_value(capsys, monkeypatch):
     monkeypatch.setattr(local, "_units", lambda cfg, stage, mode: [])
     local.run_pipeline({"apply_basic": True}, "intensity", dry_run=True)
     assert "apply_basic=False" in capsys.readouterr().out
+
+
+def test_stats_arrays_are_created_up_front_and_zero_byte_metadata_is_rebuilt(experiment):
+    """The driver must leave the workers nothing to create.
+
+    An n5 array whose attributes.json is zero bytes is unopenable and unrepairable --
+    tensorstore has to read the metadata to write it -- so a create race does not just fail
+    a run, it poisons the array for every run afterwards. Both halves are checked here: the
+    arrays exist before submission, and a poisoned one is rebuilt rather than handed over.
+    """
+    from spotlight import scripts
+
+    scripts.create_quartile_histograms()
+    meta = experiment / "results" / "camera1" / "q050" / "s0" / "attributes.json"
+    assert meta.is_file() and meta.stat().st_size, "array not created before submission"
+    good = meta.read_bytes()
+
+    # Exactly what a late creator leaves behind: truncated metadata over a chunk that had
+    # already been written. The stale chunk must not survive into the rebuilt array.
+    meta.write_bytes(b"")
+    stale = meta.parent / "0" / "6"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(b"stale")
+
+    scripts.create_quartile_histograms()
+    assert meta.read_bytes() == good, "zero-byte attributes.json was not rebuilt"
+    assert not stale.is_file(), "stale chunk survived the rebuild"

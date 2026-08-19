@@ -231,6 +231,31 @@ def create_quartile_histograms(cfg=None):
         if d.is_dir():
             shutil.rmtree(d)
 
+    # Create every statistic array HERE, once, before the array job goes out. A worker
+    # opens with `create=True`, which is harmless when the array already exists but not
+    # when 40 elements race to create the same one: tensorstore's file kvstore writes
+    # attributes.json with O_TRUNC, so a late creator truncates an ALREADY VALID one to
+    # zero bytes, and every element afterwards dies `Invalid JSON` -- permanently, because
+    # tensorstore cannot open the file to repair it. Seen on camera 9 of an 11-camera run:
+    # q010 and q015 were clobbered after chunk 0/6 had already been written to them, and
+    # all 40 elements failed while the other ten cameras were fine. Creating them from one
+    # process leaves the workers nothing to race over. They still create on demand, so a
+    # direct `python -m spotlight stats` outside this driver keeps working.
+    from .orderstats import LEVELS
+    stat_names = ("minima", "maxima", *(f"q{q:03d}" for q in LEVELS))
+    ctx = stores.context()
+    for c in cameras:
+        for name in stat_names:
+            d = Path(f'{cfg["results_root"]}/camera{c + 1}/{name}/s{lvl}')
+            # Drop a zero-byte one rather than trying to open it -- and the whole array
+            # with it, so chunks written before the clobber cannot survive into a run that
+            # tiles them differently. Same reasoning as the partials cleared above.
+            if (d / "attributes.json").is_file() and not (d / "attributes.json").stat().st_size:
+                print(f"removing {d}: zero-byte attributes.json from an interrupted create")
+                shutil.rmtree(d)
+            stores.open_stats_array(cfg, c, name, size_xy, scale=lvl, ctx=ctx)
+    print(f"{len(cameras)} camera(s) x {len(stat_names)} statistic array(s) ready")
+
     _write("bsub_command.sh", "\n".join(lines) + "\n")
     print(f"{num_jobs} job(s) x {len(cameras)} camera(s), {n_chunks} chunks, "
           f"level {lvl}, frame {size_xy}")
