@@ -78,13 +78,13 @@ DEFAULTS = {
     # stats, the emptiness stage's pooled threshold, the gain floor, the
     # empty/bimodal/uniform classification, and the apply stage's mask. A threshold set
     # too high is the usual cause of a seam that survives correction.
-    #   "otsu"   -- per tile (default). Assumes two classes of comparable size, so it
+    #   "otsu"   -- Assumes two classes of comparable size, so it
     #               lands deep in the tail on a sparse specimen
     #   "li"     -- minimum cross-entropy; resists a heavy tail. See resolve_threshold.
     #   "pooled" -- the emptiness stage's dataset-wide value (which is itself otsu).
     #   a number -- one floor everywhere; also lets the emptiness stage skip its
     #               sampling pass entirely.
-    "tile_threshold": "otsu",
+    "tile_threshold": "li",
     "min_overlap_foreground": 256,      # = tilestats.MIN_FOREGROUND
     "min_overlap_fraction": 0.001,      # = tilestats.MIN_FG_FRACTION
 
