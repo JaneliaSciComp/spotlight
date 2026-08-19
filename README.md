@@ -29,8 +29,7 @@ sp.set_config(
     input_basic_path  = "/path/to/data/dataset.ome.zarr",   # the store BaSiC reads
     output_basic_path = "/path/to/basic_corrected.ome.zarr",# the store `correct` writes
     results_root      = "/path/to/results",
-    input_format      = "zarr3",       # zarr2 | zarr3 | zarr3_unsharded | n5
-                                       # output_format defaults to input_format; add "tiff" for OME-TIFF out
+    format            = "zarr3",       # zarr2 | zarr3 | zarr3_unsharded | n5
     last_setup        = 8,
     setups_per_camera = 9,
     chunk_size        = [128, 128, 64],
@@ -88,9 +87,6 @@ python -m spotlight run basic --start-at basic      # resume after inspecting it
 See config.py for a complete list of params. Below is a compilation of some that are dataset dependent.
 
 ### BaSiC Parameters
-```"autotune": bool (default true)``` \
-&emsp;Chooses `lambda` (the flat-field smoothness weight) by grid search instead of taking the `l1/800` default, following [BaSiCPy](https://www.biorxiv.org/content/10.64898/2026.04.28.721386v1) — lambda has the largest single effect on the fit and is genuinely dataset-dependent. Candidates are multiples of that default, scored by the entropy of the corrected stack plus a penalty on high-frequency structure left in the flat field. Costs ~11 extra fits per camera, all at 128x128, so it is cheap regardless of tile size. Setting `lambda` to a nonzero value turns it off — an explicit lambda is honoured as chosen. Turn it off to reproduce a fit made before this existed.
-
 ```"basic_unmix_empty": bool (default false)``` \
 &emsp;Turn this on if you have camera(s) with asymmetrical darkfield profiles (i.e. a lobe or something similar that is empty on only one part of the tile xy plane).
 
@@ -105,13 +101,13 @@ See config.py for a complete list of params. Below is a compilation of some that
 &emsp;Use "camera" if you are trying to match intensities across cameras. "Tile" is typically used to deal with per-tile bleaching.
 
 ```"gain_estimator": "intersection" (default) or "independent"``` \
-&emsp;If your dataset is already reasonably well-stitched, use "intersection." "Independent" is use for unstitched or poorly stitched data.
+&emsp;If your dataset is already reasonably well-stitched, use "intersection." "Independent" is used for unstitched or poorly stitched data.
 
 ```"gain_lambda": Float between 0 and 1``` \
 &emsp;This is the intensity matching regularization term. If you would like your gain mappings to be almost unregularized (for ex, highly determined systems like camera-based workflows), we recommend 1e-6. 0.01 or 0.1 is typical for tile-based workflows.
 
-```"gain_floor": "otsu" (default), "li", "pooled", or a number``` \
-&emsp;This is the minimum intensity cutoff used to calculate the gain mappings. Otsu is the most efficient and is ok for most workflows. However, with very sparse data (i.e. a small specimen that does not fill the whole tile), "li" works better.
+```"gain_floor": "tile" (default), "otsu", "li", "pooled", or a number``` \
+&emsp;This is the minimum intensity cutoff used to calculate the gain mappings. It defaults to the current value of tile_threshold.
 
-```"tile_threshold": "otsu" (default), "li", "pooled", or a number``` \
-&emsp;This is the minimum intensity cutoff used during the intensity correction step; i.e. all voxels with an intensity below this threshold will be considered to be background and not adjusted. Typically matches gain_floor, but it can be helpful to lower this if some foreground voxels are not being adjusted.
+```"tile_threshold": "li" (default), "otsu", "pooled", or a number``` \
+&emsp;This is the minimum intensity cutoff used during the intensity correction step; i.e. all voxels with an intensity below this threshold will be considered to be background and not adjusted. Typically matches gain_floor, but it can be helpful to lower this is some foreground voxels are not being adjusted. Li is the default and works well on datasets with unequal background and foreground distributions. Otsu is more efficient.
