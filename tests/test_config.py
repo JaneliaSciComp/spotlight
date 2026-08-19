@@ -122,3 +122,38 @@ def test_negative_stats_level_is_rejected(tmp_path, monkeypatch):
     config.set_config(results_root="/res", last_setup=0, basic_stats_level=-1)
     with pytest.raises(ValueError, match="basic_stats_level"):
         config.load_config()
+
+
+def test_a_broken_toml_names_the_file_it_read(tmp_path, monkeypatch):
+    """The traceback tomllib produces on its own says neither which file nor which
+    directory, so a run from the wrong directory is indistinguishable from a corrupt toml --
+    and a byte-order mark, which reads as an error at line 1 column 1, looks like neither."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "LocalPreferences.toml").write_bytes(
+        b"\xef\xbb\xbf[spotlight]\ninput_basic_path = \"/x\"\n")     # BOM ahead of the table
+    with pytest.raises(ValueError) as e:
+        config.load_config()
+    assert str(tmp_path / "LocalPreferences.toml") in str(e.value)
+    assert "byte-order mark" in str(e.value)
+
+
+def test_every_correction_mode_maps_to_a_core_count_that_exists():
+    """`stage_cores` is what an off-cluster thread pool is sized from, so a mode missing from
+    the map raises inside the stage rather than at submit time -- and a key naming a
+    `n_cores_*` that DEFAULTS does not have would do the same on any partial config."""
+    from spotlight import correct
+    for mode in correct.MODES:
+        if mode == "auto":
+            continue                      # resolved to one of the others before use
+        assert mode in config.CORES_KEY, f"mode {mode!r} has no core count"
+    for stage, key in config.CORES_KEY.items():
+        assert key in config.DEFAULTS, f"{stage} -> {key}, which is not in DEFAULTS"
+
+
+def test_stage_cores_prefers_the_config_then_falls_back_to_defaults():
+    """A hand-built cfg (test fixture, partial toml) must size a pool, not kill the stage."""
+    assert config.stage_cores({"n_cores_int_correct": 7}, "both") == 7
+    assert config.stage_cores({}, "both") == config.DEFAULTS["n_cores_int_correct"]
+    assert config.stage_cores({}, "basic") == config.DEFAULTS["n_cores_correction"]
+    # The two correction pipelines genuinely differ, which is the reason for the map.
+    assert config.CORES_KEY["basic"] != config.CORES_KEY["both"]

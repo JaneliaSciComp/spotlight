@@ -23,7 +23,7 @@ from .formats import FORMATS, OUTPUT_FORMATS
 
 __all__ = [
     "load_config", "set_config", "set_basic_config", "basic_params",
-    "camera_setups", "num_cameras", "basic_view", "config_path",
+    "camera_setups", "num_cameras", "basic_view", "config_path", "stage_cores",
 ]
 
 TABLE = "spotlight"
@@ -144,6 +144,34 @@ def _read_tables():
         return tomllib.load(f)
 
 
+# The `n_cores_*` key each stage is submitted with, so a thread pool can be sized from the
+# reservation the stage would have had. One mapping, because otherwise every pool repeats
+# the key and they drift: `correct` sized itself from 8 off-cluster for a stage that asks
+# LSF for 20.
+CORES_KEY = {
+    "stats": "n_cores_stats",
+    "basic": "n_cores_correction",        # the BaSiC-only correction script
+    "intensity": "n_cores_int_correct",   # the intensity pipeline's apply stage
+    "both": "n_cores_int_correct",
+    "int-stats": "n_cores_int_stats",
+    "aggregate": "n_cores_int_aggregate",
+}
+
+
+def stage_cores(cfg, stage):
+    """The `bsub -n` this stage is submitted with, as a thread-pool size.
+
+    Pass it to `stores.slots()`, which prefers LSF's actual reservation and falls back to
+    this -- so an off-cluster run gets the pool the cluster would have given it instead of
+    an unrelated literal.
+
+    Reads DEFAULTS when the key is absent rather than raising: a partial config (a test
+    fixture, a hand-built dict) should size a pool, not kill the stage.
+    """
+    key = CORES_KEY[stage]
+    return int(cfg.get(key) or DEFAULTS[key])
+
+
 def load_config(require_intensity_io=False):
     """The merged configuration for this experiment.
 
@@ -261,8 +289,21 @@ def _load_toml_config(require_intensity_io=True):
     invokes it), and a BaSiC-only experiment has no reason to have configured the
     per-setup intensity pipeline's I/O at all. Demanding those keys there turned a
     working BaSiC run into a KeyError."""
-    with open(Path.cwd() / "LocalPreferences.toml", "rb") as f:
-        _tables = tomllib.load(f)
+    path = config_path()
+    try:
+        with open(path, "rb") as f:
+            _tables = tomllib.load(f)
+    except tomllib.TOMLDecodeError as err:
+        # tomllib names neither the file nor the reason a first-line failure is usually
+        # spurious, and the file it reads is the CWD's -- so the traceback alone cannot tell
+        # you whether the toml is broken or you are simply in the wrong directory.
+        raise ValueError(
+            f"{path} is not valid TOML: {err}. That path is the current working "
+            f"directory's -- each experiment's toml is picked up by running from that "
+            f"experiment's directory -- so check this is the directory you meant. A "
+            f"complaint at line 1 column 1 on a file that looks correct is usually a "
+            f"UTF-8 byte-order mark an editor added ahead of the first table header."
+        ) from err
     cfg = _tables.get("spotlight") or _tables["BigFlatFieldIlluminator"]
 
     def expand(s):

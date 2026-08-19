@@ -215,7 +215,8 @@ async def _write_tiff(view, setup, mode, src_c, zyx, dtype_name, shard_corr):
     Z, Y, X = zyx
     path = tiff_tile_path(view, setup)
     voxel = voxel_size_um(view, setup)
-    pool = ThreadPoolExecutor(max_workers=int(os.getenv("LSB_DJOB_NUMPROC", "8")))
+    pool = ThreadPoolExecutor(max_workers=stores.slots(
+        _config.stage_cores(view, mode)))
     timing = {"t_read": 0.0, "t_compute": 0.0, "t_write": 0.0, "bytes_in": 0,
               "n_shards": 0, "concurrency": 1, "mode": mode}
     t_start = time.perf_counter()
@@ -336,7 +337,9 @@ async def _run(cfg, setup, requested):
     # the event loop and serializes every shard's compute onto one core no matter how
     # many were asked for. In a thread pool, numpy's GIL-releasing array ops overlap
     # across cores while asyncio keeps the reads flowing.
-    n_cores = int(os.getenv("LSB_DJOB_NUMPROC", "8"))
+    # Sized from the reservation, like tensorstore's two pools; see the table above
+    # `stores.slots` for how the three of them add up against the load contract.
+    n_cores = stores.slots(_config.stage_cores(view, mode))
     pool = ThreadPoolExecutor(max_workers=n_cores)
     timing = {"t_read": 0.0, "t_compute": 0.0, "t_write": 0.0, "bytes_in": 0,
               "n_shards": len(origins), "concurrency": limit, "mode": mode}

@@ -134,3 +134,19 @@ def test_generated_bsub_lines_do_not_expand_job_variables(tmp_path, monkeypatch)
         assert "PYTHONPATH" not in text, "the package comes from the environment now"
         # The command must be single-quoted, so nothing in it expands at submit time.
         assert text.count("'") == 2, text
+
+
+def test_the_runner_does_not_cap_blas_pools():
+    """Pinned as a decision, not an omission. The caps are the obvious-looking fix -- BLAS
+    sizes its pool from the host, not the allocation -- but those threads sleep
+    interruptibly and the load average ignores them. Measured at 30 slots on `correct`:
+    1157 peak runnable-or-blocked uncapped against 1245 capped, while the tensorstore pool
+    split alone reached 70. Re-measure with `bench/sweep_threads.py --arms legacy,blas-only`
+    before putting them back.
+    """
+    from spotlight import scripts
+    cmd = scripts.runner()
+    assert "MALLOC_ARENA_MAX" in cmd, "the arena cap IS measured and must stay"
+    for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS",
+                "OMP_WAIT_POLICY"):
+        assert var not in cmd, f"{var} moved no load number; see bench/sweep_threads.py"

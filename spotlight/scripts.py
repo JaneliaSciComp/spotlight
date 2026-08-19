@@ -53,6 +53,22 @@ def runner():
     `spotlight` itself comes from the environment -- it is a `[pypi-dependencies]` entry
     installed editable, so `pixi run` alone puts it on the path. Run `pixi install` after
     moving or first cloning the checkout, or the stages will not import.
+
+    There are deliberately NO OMP_NUM_THREADS / OPENBLAS_NUM_THREADS caps here, and that
+    is a measurement rather than an oversight. They look like they belong: each of those
+    libraries sizes its pool from the HOST's logical core count rather than the LSF
+    allocation, so a 30-slot element on a 128-core host opens 128 BLAS threads before doing
+    any work -- which is what put 187 threads in the resource summary of elements that died
+    in `load_config()` having read nothing. But those threads sit in INTERRUPTIBLE sleep,
+    and the load average counts only runnable and uninterruptible ones, so capping them
+    moves no number LSF cares about. Measured with `bench/sweep_threads.py correct` at 64
+    slots: peak runnable-or-blocked 1157 uncapped against 1245 capped -- i.e. worse, inside
+    the noise -- while `file_io_concurrency` alone took the same stage to 70, i.e. 1.1x the
+    allocation. The caps buy
+    ~64 fewer idle threads in `ps` and nothing else, so they are not here. See the table above
+    `stores.slots` for the two knobs that did move it. A stage with real linear algebra --
+    `basic`, whose BaSiC fit is an SVD -- was never measured, so if one ever needs these,
+    measure before adding: an env var in this string is charged to every stage.
     """
     return ('MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-4} '
             f"pixi run --manifest-path {PACKAGE_ROOT} python -m spotlight")

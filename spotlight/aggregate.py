@@ -40,7 +40,6 @@ CLI: `python -m spotlight int-aggregate`.
 """
 
 import json
-import os
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime as dt
@@ -50,10 +49,11 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import lsqr
 
-from .config import camera_groups, camera_of, stats_path, target_path, tile_list
+from .config import (camera_groups, camera_of, stage_cores, stats_path,
+                     target_path, tile_list)
 from .fields import _check_basic_mode, basic_model
 from .formats import _SPEC, _input_location, canonical_view
-from .stores import _atomic_write_json, source_pyramid_factors
+from .stores import _atomic_write_json, slots, source_pyramid_factors
 from .tilestats import (
     MIN_FG_FRACTION, MIN_FOREGROUND, THRESHOLD_METHODS, _classify, limits,
     open_downsampled,
@@ -468,7 +468,7 @@ def cmd_aggregate(cfg):
     """
     setups_all = tile_list(cfg)
     _, order = _input_location(cfg, setups_all[0], cfg["stats_scale"])
-    n_cores = int(os.getenv("LSB_DJOB_NUMPROC", "20"))
+    n_cores = slots(stage_cores(cfg, "aggregate"))
     # gain grouping: "camera" (default) shares one gain across a camera's tiles --
     # robust (many constraints per node) and matches the sensor-level step we correct;
     # "tile" is the old per-tile mode (opt in). Regularization is just `gain_lambda`;

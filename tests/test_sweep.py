@@ -201,3 +201,67 @@ def test_scratch_workdir_says_so_when_there_are_no_measurements(tmp_path, monkey
     monkeypatch.chdir(exp)
     sweep._scratch_workdir(str(tmp_path / "scratch"))
     assert "skip the background profile" in capsys.readouterr().out
+
+
+# ─── sweep_threads ────────────────────────────────────────────────────────────
+#
+# The load harness, whose two non-obvious pieces are a parser and an environment reset.
+# What it MEASURES has no right answer to assert (that is the point of a benchmark), but
+# both of these are wrong-or-right and both would corrupt every number in the table.
+
+import sweep_threads as threads_sweep
+
+
+@pytest.mark.parametrize("line, want", [
+    ("1234 (python3.11) S 1 1234 1234 0 -1 4194560 12", "S"),
+    ("1234 (ts_file_io) D 1 1234 1234 0 -1 4194560 12", "D"),
+    # A comm containing spaces and parens is the case that breaks a naive split(): the
+    # state is field 3, but `.split()[2]` here returns "worker)" and every thread reads as
+    # neither R nor D, silently reporting a load of zero.
+    ("1234 (my prog (v2)) R 1 1234 1234 0 -1 4194560 12", "R"),
+])
+def test_the_thread_state_is_read_past_the_executable_name(line, want):
+    assert threads_sweep._state_char(line) == want
+
+
+def test_an_arm_does_not_inherit_the_knob_it_means_to_set(monkeypatch):
+    """Every arm runs in the same submitting shell, so a value exported there -- or left by a
+    previous arm's wrapper -- would quietly benchmark something other than the arm's name."""
+    monkeypatch.setenv("SPOTLIGHT_IO_CONCURRENCY", "999")
+    monkeypatch.setenv("SPOTLIGHT_COPY_CONCURRENCY", "999")
+
+    table = threads_sweep.arms(64)
+    legacy = threads_sweep.arm_env(table["legacy"], 64)
+    assert legacy["SPOTLIGHT_IO_CONCURRENCY"] == "4096"     # the arm's, not the shell's
+    assert legacy["SPOTLIGHT_COPY_CONCURRENCY"] == "64"
+
+    shipped = threads_sweep.arm_env(table["shipped"], 64)
+    assert (shipped["SPOTLIGHT_IO_CONCURRENCY"],
+            shipped["SPOTLIGHT_COPY_CONCURRENCY"]) == ("32", "64")
+
+    # Unrelated environment still passes through -- the stage needs it to run at all.
+    monkeypatch.setenv("SPOTLIGHT_GB_PER_SLOT", "15")
+    assert threads_sweep.arm_env(table["legacy"], 64)["SPOTLIGHT_GB_PER_SLOT"] == "15"
+
+
+def test_it_refuses_to_invent_the_slot_count(monkeypatch, capsys):
+    """Every ratio in the table and every arm's pool sizes are derived from this one number.
+    `stores.slots()` has a default of 8 for off-cluster library use; taking it here means a
+    64-core node with no reservation exported quietly measures an 8-slot configuration and
+    prints OK. Better to stop."""
+    monkeypatch.delenv("LSB_DJOB_NUMPROC", raising=False)
+    with pytest.raises(SystemExit) as e:
+        threads_sweep.main(["correct", "0"])
+    assert "LSB_DJOB_NUMPROC is not set" in str(e.value)
+    assert "--slots" in str(e.value)
+
+
+def test_the_slot_count_reaches_the_stage_too(monkeypatch):
+    """The stage sizes its own kernel pool from `stores.slots()`, so judging a ratio against
+    30 while the child builds an 8-thread pool measures neither configuration."""
+    monkeypatch.delenv("LSB_DJOB_NUMPROC", raising=False)
+    env = threads_sweep.arm_env(threads_sweep.arms(30)["shipped"], 30)
+    assert env["LSB_DJOB_NUMPROC"] == "30"
+
+    monkeypatch.setenv("LSB_DJOB_NUMPROC", "8")          # must not win over the arm's n
+    assert threads_sweep.arm_env(threads_sweep.arms(30)["legacy"], 30)["LSB_DJOB_NUMPROC"] == "30"

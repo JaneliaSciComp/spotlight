@@ -170,3 +170,59 @@ def test_stats_arrays_are_created_up_front_and_zero_byte_metadata_is_rebuilt(exp
     scripts.create_quartile_histograms()
     assert meta.read_bytes() == good, "zero-byte attributes.json was not rebuilt"
     assert not stale.is_file(), "stale chunk survived the rebuild"
+
+
+def test_the_output_pyramid_matches_a_numpy_downsample(tmp_path, monkeypatch):
+    """The pyramid is written slab by slab, so an off-by-one in the slab loop would leave
+    a shifted, duplicated or zeroed band that only a value check catches -- and the
+    default test store has no level 1 at all, so nothing else here runs this code.
+
+    `shard_size` z is 16 against a 31-plane level 1 on purpose: two slabs plus a short
+    tail, which is where a slab loop goes wrong if it is going to.
+    """
+    from make_store import volume
+    from spotlight.formats import _SPEC, _in_order, canonical_view
+    from spotlight.stores import _context, open_output_array, write_group_metadata
+    from spotlight import stores
+
+    fmt, setups, Z, y, x = "zarr2", (0,), 63, 48, 64
+    store = tmp_path / "in"
+    cfg = {"output_intensity_path": str(store), "output_format": fmt,
+           "chunk_size": [32, 32, 32], "shard_size": [64, 64, 16]}
+    order = _SPEC[fmt]["order"]
+    ctx = _context()
+    vol = volume(0, Z, y, x)
+    # Level 1 is the mean-downsample of level 0, as a real input pyramid is; the stage only
+    # reads its SHAPE (to derive the factors), but a lying level 1 would mislead anyone
+    # debugging this test.
+    half = (vol[: Z // 2 * 2].reshape(Z // 2, 2, y // 2, 2, x // 2, 2)
+            .mean(axis=(1, 3, 5)).round().astype(np.uint16))
+    for level, data in ((0, vol), (1, half)):
+        arr, _, _ = open_output_array(
+            cfg, 0, level, _in_order(data.shape, order), "uint16", ctx)
+        canonical_view(arr, order)[:, :, :].write(data).result()
+    write_group_metadata(cfg, 0, [(1, 1, 1), (2, 2, 2)])
+
+    monkeypatch.chdir(tmp_path)
+    config.set_config(
+        input_basic_path=str(store), output_basic_path=str(store) + "_out",
+        results_root=str(tmp_path / "results"), qstacks_dir=str(tmp_path / "qstacks"),
+        input_format=fmt, last_setup=0, setups_per_camera=1,
+        chunk_size=[32, 32, 32], shard_size=[64, 64, 16],
+        lsf_project="p", output_stem=str(tmp_path / "o"),
+        error_stem=str(tmp_path / "e"), n_cores_stats=2, n_cores_correction=2,
+    )
+    main(["run", "basic"])
+
+    out = {**config.load_config(), "input_basic_path": str(store) + "_out"}
+    got0 = np.asarray(stores.open_source(out, 0, 0)[:, :, :].read().result())
+    got1 = np.asarray(stores.open_source(out, 0, 1)[:, :, :].read().result())
+    # Odd Z: tensorstore rounds the level UP, so the last plane averages the one leftover
+    # source plane on its own. Both halves are checked -- the tail is exactly where a slab
+    # loop truncates.
+    nz = Z // 2
+    assert got1.shape == (nz + 1, y // 2, x // 2)
+    binned = lambda a: a.reshape(-1, 2, y // 2, 2, x // 2, 2).mean(axis=(1, 3, 5))
+    assert np.abs(got1[:nz].astype(np.int32) - binned(got0[:nz * 2])).max() <= 1
+    tail = got0[nz * 2:].reshape(1, 1, y // 2, 2, x // 2, 2).mean(axis=(1, 3, 5))
+    assert np.abs(got1[nz:].astype(np.int32) - tail).max() <= 1

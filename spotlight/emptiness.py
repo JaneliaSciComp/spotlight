@@ -28,7 +28,7 @@ import tensorstore as ts
 from .config import camera_groups, empty_fraction_path, stats_path, tile_list
 from .formats import (_input_location, _SPEC, canonical_shape, canonical_view,
                       write_plane_tiff)
-from .stores import _atomic_write_json, _context, source_pyramid_shapes
+from .stores import _atomic_write_json, _context, slots, source_pyramid_shapes
 from .tilestats import (MIN_FG_FRACTION, _merge_tile_stats, threshold_mode,
                         threshold_values)
 
@@ -112,13 +112,14 @@ def _read_tile(cfg, setup, level):
 def _emptiness_workers(n_tiles):
     """Thread count for the two `_empty_areas` read passes.
 
-    `LSB_DJOB_NUMPROC` like the other stages, but with a smaller default: unlike `stats`
-    and `apply`, this stage is normally launched by Julia's `measure_emptiness()` on
-    whatever node the user is sitting on rather than through bsub, so the variable is
-    usually absent and the default is what actually runs. Capped at the tile count
-    because a thread per tile is the most that can help.
+    `LSB_DJOB_NUMPROC` like the other stages, but with a smaller default and no
+    `config.stage_cores` to draw it from: unlike `stats` and `apply`, this stage has no bsub
+    script of its own -- it is normally launched by Julia's `measure_emptiness()` on whatever
+    node the user is sitting on -- so the variable is usually absent and the default is what
+    actually runs. `slots` clamps it to the machine. Capped at the tile count too, because a
+    thread per tile is the most that can help.
     """
-    n = int(os.getenv("LSB_DJOB_NUMPROC", str(min(16, (os.cpu_count() or 8)))))
+    n = slots(16)
     return max(1, min(n, n_tiles))
 
 

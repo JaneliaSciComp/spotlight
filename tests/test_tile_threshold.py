@@ -71,8 +71,11 @@ def test_a_typo_is_not_silently_treated_as_otsu():
         tilestats.resolve_threshold({"tile_threshold": "auto"}, 0, _vol())
 
 
-def test_it_is_in_the_config_list():
-    assert config.DEFAULTS["tile_threshold"] == "otsu"
+def test_the_default_is_a_mode_resolve_threshold_accepts():
+    """Membership, not a literal: the default is an operator choice that moves (it was
+    "otsu", now "li"), but a default outside THRESHOLD_MODES makes every stage that reads it
+    raise, so THAT is the thing worth pinning."""
+    assert config.DEFAULTS["tile_threshold"] in tilestats.THRESHOLD_MODES
 
 
 # ─── it must reach every consumer, not just the stats file ────────────────────
