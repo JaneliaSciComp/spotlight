@@ -9,11 +9,10 @@ that resizing and that transpose live here rather than in each caller.
 make the two modules import each other.
 """
 
-from datetime import datetime as dt
-
 import numpy as np
 
 from .config import basic_field_paths, camera_of
+from .formats import canonical_plane
 from .stores import source_pyramid_shapes
 
 
@@ -43,27 +42,15 @@ def _read_field_tiff(path):
     return img.astype("float32")
 
 
-def _oriented_field(field, full_yx, path, in_plane_order):
-    """A field in canonical (Y, X).
+def _oriented_field(field, full_yx, path):
+    """A field in canonical (Y, X), which is how `save_basic_field` writes it.
 
-    `save_qstack_camera` writes the qstack -- and so BaSiC its fields -- in
-    whatever in-plane order that camera's stats used: (Y, X) for the zarr
-    formats, (X, Y) for n5. `in_plane_order` is that expectation, derived from
-    the input format rather than guessed from the shape, so a square tile
-    (Y == X, where both orientations "fit") still resolves correctly. The
-    transpose is accepted with a warning only when the shape rules the expected
-    order out -- e.g. fields produced by a differently-formatted earlier run.
+    Stated rather than inferred from the shape, so a square tile -- where both orientations
+    "fit" -- still resolves. The transpose is accepted with a warning only when the shape
+    rules canonical out: fields from the Julia package, or from a run before these planes
+    were unified, are (X, Y) on an n5 dataset. Re-run `run_basic()` to silence it.
     """
-    Y, X = full_yx
-    expected = (Y, X) if in_plane_order == "yx" else (X, Y)
-    if field.shape == expected:
-        return field if in_plane_order == "yx" else np.ascontiguousarray(field.T)
-    if field.shape == expected[::-1]:
-        print(dt.now(), f"WARNING: {path} shape {field.shape} is the transpose of the "
-                        f"expected {in_plane_order} order {expected}; transposing", flush=True)
-        return np.ascontiguousarray(field.T) if in_plane_order == "yx" else field
-    raise ValueError(f"{path}: field shape {field.shape} matches neither the tile's "
-                     f"expected {in_plane_order} plane {expected} nor its transpose")
+    return canonical_plane(field, full_yx, "yx", what=str(path))
 
 
 def _block_mean_2d(a, fy, fx, out_yx):
@@ -154,13 +141,8 @@ def basic_model(cfg, setup, level_yx):
                                f"for camera {cam + 1}, or set apply_basic = false")
     fy = max(round(full_yx[0] / level_yx[0]), 1)
     fx = max(round(full_yx[1] / level_yx[1]), 1)
-    # The fields were written by the Julia stats/BaSiC run over this same store
-    # (joint mode reads the raw dataset), so the input format also fixes the
-    # in-plane order those fields are stored in.
-    ipo = "xy" if cfg["input_format"] == "n5" else "yx"
-
     def prep(p):
-        return _block_mean_2d(_oriented_field(_read_field_tiff(p), full_yx, p, ipo),
+        return _block_mean_2d(_oriented_field(_read_field_tiff(p), full_yx, p),
                               fy, fx, level_yx)
 
     model = BasicModel(prep(flat_p), prep(dark_p))

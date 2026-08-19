@@ -26,13 +26,9 @@ __all__ = [
 # phi at or above this is capped: 1/(1 - phi) is 10x at 0.9 and unbounded at 1.
 MAX_UNMIX_PHI = np.float32(0.9)
 
-def in_plane_order(cfg):
-    """The in-plane axis order this camera's qstack and fields are stored in.
-
-    Same rule `basic_model` uses to read the fields back, so the two cannot
-    disagree: n5 keeps the source's (X, Y), everything else is transposed to (Y, X).
-    """
-    return "xy" if cfg["input_format"] == "n5" else "yx"
+# Re-exported: it moved to `formats` so the writers of every plane -- the BaSiC fields and
+# the empty-fraction map -- can reach the one rule without importing this module.
+from .formats import in_plane_order, in_plane_swap  # noqa: E402
 
 
 def qstack_frame_size(cfg, scale):
@@ -177,9 +173,18 @@ def empty_fraction_map(cfg, camera, frame_size):
     except (OSError, ValueError) as err:
         print(f"warning: could not read the empty-fraction map {path} ({err}); cannot un-mix")
         return None
-    # Fix orientation BEFORE resizing: a coarse map whose aspect is transposed relative to
-    # the qstack would otherwise resize to the wrong thing.
+    # On disk the map is canonical (Y, X), like every plane beside a camera; the qstack it
+    # un-mixes keeps the source's (X, Y) for n5. Swap from the config rather than from the
+    # shape, so this is right for a square frame too, and BEFORE resizing, or the resize
+    # maps one aspect onto the other.
+    phi = in_plane_swap(phi, in_plane_order(cfg))
+    # A map from the Julia package, or from a run before these planes were unified, may be
+    # (X, Y) already -- in which case the swap above put it the wrong way round. Aspect is
+    # the only evidence available (phi is at a coarse level, so its shape cannot be matched
+    # against the frame) and it settles every frame that is not square.
     if (phi.shape[0] > phi.shape[1]) != (frame_size[0] > frame_size[1]):
+        print(f"note: {path} is not canonical (Y, X); transposing it. Re-run the emptiness "
+              f"stage to rewrite it in the order every other plane uses.")
         phi = np.ascontiguousarray(phi.T)
     if phi.shape == tuple(frame_size):
         return phi

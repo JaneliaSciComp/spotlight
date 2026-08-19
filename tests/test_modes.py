@@ -276,3 +276,99 @@ def test_old_empty_fraction_location_is_still_read(tmp_path, capsys):
     got = qstack.empty_fraction_map(cfg, 0, (8, 8))
     assert got is not None and float(got.mean()) == pytest.approx(0.25)
     assert "old location" in capsys.readouterr().out
+
+
+# ─── the planes written beside a camera ───────────────────────────────────────
+#
+# Flat-field.tif, Dark-field.tif and empty_fraction.tif are all one frame-shaped plane and
+# all stored in `in_plane_order`. These exercise the n5 branch specifically: everything
+# else in the suite runs on zarr2, where the order is canonical and every transpose in this
+# path is a no-op, so a regression here would pass unnoticed.
+
+
+@pytest.mark.parametrize("fmt", ["n5", "zarr2"])
+def test_empty_fraction_is_stored_canonically_and_read_in_qstack_order(tmp_path, fmt):
+    """Canonical (Y, X) on disk whatever the format, swapped into the qstack's order on read.
+
+    The values are asymmetric and the plane non-square on purpose -- a stray transpose has
+    to change the array, not merely survive a shape check.
+    """
+    import numpy as np, tifffile
+    from spotlight import qstack
+    from spotlight.config import empty_fraction_path
+    from spotlight.emptiness import _write_empty_fraction
+    from spotlight.formats import in_plane_order, in_plane_swap
+
+    phi = (np.arange(24, dtype=np.float32) / 24.0).reshape(4, 6)     # canonical (Y, X)
+    cfg = {"results_root": str(tmp_path / fmt), "input_format": fmt}
+    path = empty_fraction_path(cfg, 0)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    assert _write_empty_fraction(path, phi)
+    assert tifffile.imread(str(path)).shape == (4, 6), f"{fmt} plane not stored canonical"
+
+    # `frame_size` is in the qstack's own order, so a map already at frame size needs no
+    # resize -- what comes back is exactly the swap, and nothing else.
+    frame = in_plane_swap(phi, in_plane_order(cfg)).shape
+    np.testing.assert_allclose(qstack.empty_fraction_map(cfg, 0, frame),
+                               in_plane_swap(phi, in_plane_order(cfg)))
+
+
+def test_basic_fields_round_trip_canonical_through_the_qstack_order(tmp_path):
+    """The n5 path, where writing and reading each apply a transpose.
+
+    Only this branch swaps, and every other test runs on zarr2 where both swaps are no-ops,
+    so a regression here would otherwise pass unnoticed. Asserts the file itself is
+    canonical, not merely that two transposes cancel.
+    """
+    import numpy as np, tifffile
+    from spotlight.basic import save_basic_field
+    from spotlight.fields import _oriented_field, _read_field_tiff
+    from spotlight.formats import in_plane_swap
+
+    canonical = (np.arange(24, dtype=np.float32) / 24.0).reshape(4, 6)      # (Y, X)
+    from_basic = in_plane_swap(canonical, "xy")                             # what BaSiC hands over
+    assert from_basic.shape == (6, 4)
+
+    path = tmp_path / "camera1" / "Flat-field.tif"
+    save_basic_field(in_plane_swap(from_basic, "xy"), path)                 # what run_basic_camera does
+    assert tifffile.imread(str(path)).shape == (4, 6), "field not stored canonical"
+    np.testing.assert_allclose(_oriented_field(_read_field_tiff(path), (4, 6), path),
+                               canonical)
+
+
+def test_pre_canonical_planes_are_still_read(tmp_path, capsys):
+    """Planes from the Julia package, or from before these were unified, are (X, Y) on an n5
+    dataset. Both readers have to keep working rather than un-mixing or dividing against
+    swapped axes."""
+    import numpy as np, tifffile
+    from spotlight import qstack
+    from spotlight.config import empty_fraction_path
+    from spotlight.fields import _oriented_field, _read_field_tiff
+
+    canonical = (np.arange(24, dtype=np.float32) / 24.0).reshape(4, 6)      # (Y, X)
+    cfg = {"results_root": str(tmp_path), "input_format": "n5"}
+
+    phi_path = empty_fraction_path(cfg, 0)
+    phi_path.parent.mkdir(parents=True, exist_ok=True)
+    tifffile.imwrite(str(phi_path), np.ascontiguousarray(canonical.T))      # the old order
+    np.testing.assert_allclose(qstack.empty_fraction_map(cfg, 0, (6, 4)), canonical.T)
+    assert "not canonical" in capsys.readouterr().out, "silent legacy phi transpose"
+
+    field = tmp_path / "Flat-field.tif"
+    tifffile.imwrite(str(field), np.ascontiguousarray(canonical.T))
+    np.testing.assert_allclose(_oriented_field(_read_field_tiff(field), (4, 6), field),
+                               canonical)
+    assert "transpose of" in capsys.readouterr().out, "silent legacy field transpose"
+
+
+def test_canonical_plane_resolves_a_square_plane_from_the_declared_order(tmp_path):
+    """The case the old aspect-ratio inference could not decide: both orientations fit a
+    square plane, so only the declared order settles it."""
+    import numpy as np
+    from spotlight.formats import canonical_plane
+
+    a = np.array([[1.0, 2.0], [3.0, 4.0]], np.float32)
+    np.testing.assert_allclose(canonical_plane(a, (2, 2), "yx"), a)
+    np.testing.assert_allclose(canonical_plane(a, (2, 2), "xy"), a.T)
+    with pytest.raises(ValueError, match="neither"):
+        canonical_plane(np.zeros((3, 5), np.float32), (2, 2), "yx")

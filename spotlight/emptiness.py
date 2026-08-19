@@ -26,7 +26,8 @@ import numpy as np
 import tensorstore as ts
 
 from .config import camera_groups, empty_fraction_path, stats_path, tile_list
-from .formats import _input_location, _SPEC, canonical_shape, canonical_view
+from .formats import (_input_location, _SPEC, canonical_shape, canonical_view,
+                      write_plane_tiff)
 from .stores import _atomic_write_json, _context, source_pyramid_shapes
 from .tilestats import (MIN_FG_FRACTION, _merge_tile_stats, threshold_mode,
                         threshold_values)
@@ -274,6 +275,10 @@ def _background_level(bg_sum, bg_cnt, percentile=BACKGROUND_PERCENTILE):
 def _write_empty_fraction(path, phi):
     """Write the per-frame-pixel empty fraction as a float32 TIFF for `save_qstack`.
 
+    `phi` is measured on canonical (Z, Y, X) volumes, so it arrives (Y, X) and is written
+    exactly so -- like every other plane beside a camera. `empty_fraction_map` swaps it into
+    the qstack's order on read.
+
     This is the map that lets the emptiness bias be REMOVED rather than avoided.
     `mstat_by_chunk` merges per-setup `OrderStats` by averaging their sorted buffers,
     so a tile that is empty at a frame position contributes the background level at
@@ -296,11 +301,10 @@ def _write_empty_fraction(path, phi):
     overlap, not per pixel -- and unlike the background profile, occupancy survives
     downsampling, which is why the two are measured at different levels."""
     try:
-        import tifffile
+        write_plane_tiff(path, phi)
     except ImportError:
         print(f"  (no {path.name}: tifffile not installed; qstack un-mixing unavailable)")
         return False
-    tifffile.imwrite(str(path), phi.astype("float32"))
     return True
 
 
@@ -344,7 +348,6 @@ def cmd_emptiness(cfg):
                                        "empty_threshold": threshold,
                                        "empty_level": level})
         phi_path = empty_fraction_path(cfg, cam - 1)
-        phi_path.parent.mkdir(parents=True, exist_ok=True)
         phi_path.parent.mkdir(parents=True, exist_ok=True)
         wrote_phi = _write_empty_fraction(phi_path, phi)
         print(f"  thr {threshold:.0f} (level {level}, {_emptiness_workers(len(setups))} "

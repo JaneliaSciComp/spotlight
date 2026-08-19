@@ -20,6 +20,9 @@ Two of the six are not this codebase's own convention:
 """
 
 import json
+from datetime import datetime as dt
+
+import numpy as np
 
 
 FORMATS = ("n5", "zarr2", "zarr3_unsharded", "zarr3", "zarr3_zyx", "zarr3_raw")
@@ -221,3 +224,70 @@ def canonical_view(arr, order):
     if order == "zyx":
         return arr
     return arr.T                # xyz -> zyx
+
+
+# ─── the 2-D planes written beside a camera ───────────────────────────────────
+#
+# `Flat-field.tif`, `Dark-field.tif` and `empty_fraction.tif` are all one frame-shaped
+# plane, and every one of them is stored CANONICAL (Y, X) -- the row-major order Fiji and
+# every other TIFF reader assumes, so they open upright and can be compared against the
+# data without a mental transpose.
+#
+# `in_plane_order` is still real, but it describes the QSTACK, not these planes: BaSiC is
+# fitted on a stack that keeps the source's (X, Y) for n5, so its fields come out in that
+# order and are swapped to canonical on the way to disk. They used to be written in
+# whatever order they arrived in, while the empty-fraction map was always canonical, which
+# left the readers inferring orientation from aspect ratio -- an inference that cannot work
+# on a square frame.
+
+
+def in_plane_order(cfg):
+    """The in-plane axis order every plane this package writes beside a camera is in.
+
+    n5 keeps the source's (X, Y); every other format is transposed to (Y, X). Derived from
+    `input_format` rather than guessed from a shape, so a square frame -- where both
+    orientations fit -- still resolves.
+    """
+    return "xy" if cfg["input_format"] == "n5" else "yx"
+
+
+def in_plane_swap(plane, order):
+    """Convert a 2-D plane between canonical (Y, X) and the qstack's in-plane `order`.
+
+    Its own inverse -- the conversion is one transpose or nothing -- so a single function
+    serves both directions: `run_basic_camera` turning BaSiC's qstack-ordered field into the
+    canonical plane it writes, and `empty_fraction_map` turning the canonical map on disk
+    back into the order the qstack it un-mixes is in.
+    """
+    return np.ascontiguousarray(plane.T) if order == "xy" else plane
+
+
+def canonical_plane(plane, expected_yx, order, what=""):
+    """A stored plane as canonical (Y, X), given the (Y, X) size it should cover.
+
+    The transpose is accepted with a warning only when the shape rules the expected order
+    out -- what a plane written by a differently-formatted earlier run looks like. Anything
+    that is neither is an error rather than a guess: silently un-mixing or dividing by a
+    plane whose axes are swapped corrupts every voxel it touches.
+    """
+    Y, X = expected_yx
+    expected = (Y, X) if order == "yx" else (X, Y)
+    if tuple(plane.shape) == expected:
+        return plane if order == "yx" else np.ascontiguousarray(plane.T)
+    if tuple(plane.shape) == expected[::-1]:
+        print(dt.now(), f"WARNING: {what} shape {tuple(plane.shape)} is the transpose of "
+                        f"the expected {order} order {expected}; transposing", flush=True)
+        return np.ascontiguousarray(plane.T) if order == "yx" else plane
+    raise ValueError(f"{what}: plane shape {tuple(plane.shape)} matches neither the "
+                     f"expected {order} plane {expected} nor its transpose")
+
+
+def write_plane_tiff(path, plane):
+    """Write one 2-D plane as a single-page float32 TIFF, so readers round-trip it.
+
+    `tifffile` is imported here rather than at module scope: the emptiness stage treats a
+    missing one as "no map this run" instead of a failure, and that only works if the
+    import raises at call time.
+    """
+    import tifffile
+    tifffile.imwrite(str(path), np.ascontiguousarray(plane, dtype=np.float32))

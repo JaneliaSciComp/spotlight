@@ -17,10 +17,10 @@ import json
 from pathlib import Path
 
 import numpy as np
-import tifffile
 from scipy.fft import dctn, idctn
 
 from . import config as _config
+from .formats import in_plane_swap, write_plane_tiff
 from . import qstack as _qstack
 
 __all__ = ["basic_estimate", "run_basic", "run_basic_camera", "imresize",
@@ -611,9 +611,14 @@ def resolve_darkfield_override(cfg, camera, params):
 
 
 def save_basic_field(data, path):
-    """Write raw float32 pixels, so the readers round-trip them unchanged."""
+    """Write one BaSiC field as a canonical (Y, X) float32 TIFF.
+
+    `data` must already be canonical -- `run_basic_camera` swaps it out of the qstack's
+    in-plane order first. Same writer as the empty-fraction map, so the two planes cannot
+    drift apart on order, dtype or contiguity.
+    """
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    tifffile.imwrite(str(path), np.ascontiguousarray(data, dtype=np.float32))
+    write_plane_tiff(path, data)
 
 
 def run_basic_camera(cfg, camera, params=None):
@@ -669,8 +674,11 @@ def run_basic_camera(cfg, camera, params=None):
                                     f"camera {camera + 1}")
     flat, dark = (Path(cfg["results_root"]) / f"camera{camera + 1}" / name
                   for name in ("Flat-field.tif", "Dark-field.tif"))
-    save_basic_field(flatfield, flat)
-    save_basic_field(darkfield, dark)
+    # BaSiC inherits the qstack's in-plane order; the files are canonical (Y, X) so Fiji
+    # opens them upright and they compare directly against the data.
+    ipo = _qstack.in_plane_order(cfg)
+    save_basic_field(in_plane_swap(flatfield, ipo), flat)
+    save_basic_field(in_plane_swap(darkfield, ipo), dark)
     print(f"BaSiC: saved {flat} {dark}")
 
 
