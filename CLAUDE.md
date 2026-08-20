@@ -250,6 +250,30 @@ Each looked like the answer and each is disproved by a probe in this file's hist
 EIO here does not mean the bytes are missing, so "the file is there" is not evidence the
 write succeeded.
 
+## `apply_basic` is about READING, not about whether BaSiC gets applied
+
+`run basic` prints `apply_basic=False` and then applies BaSiC. Both are correct; the flag
+answers a different question than its name suggests — *do the stages read BaSiC-corrected
+voxels?* — and the `correct` stage sets its own answer regardless:
+
+| pipeline | mode | pipeline-level | what `correct` uses |
+|---|---|---|---|
+| `basic` | `basic` | False | **True** (`correct._view`, unconditional) |
+| `intensity` | `intensity` | False | False |
+| `both` | `both` | True | True |
+
+False is not merely harmless for the `basic` pipeline, it is required: `stats` and `qstack`
+build the qstacks the `basic` stage **fits the fields from**, so reading flat-fielded voxels
+there would fit a flat field to already-flat-fielded data. And in that pipeline only
+`correct` consults the flag at all — `emptiness`, `stats`, `qstack` and `basic` never read
+`cfg["apply_basic"]`. The consumers are `int-stats`, `int-aggregate`, and
+`fields.basic_model` via `correct`.
+
+So the banner said "for every stage" about a flag four of five stages ignore and the fifth
+overrides. It now names `mode`, which is what actually decides. Keep the substring
+`apply_basic=<bool>` — `test_run_pipeline_overrides_a_stale_autodetected_value` greps it —
+and keep it off the `pipeline:` line, which `test_stage_windows` parses by stage name.
+
 ## Gotchas that cost real time
 
 - **Stale `.pyc` on same-size edits.** Mutation-testing `"n_cores_int_correct"` →

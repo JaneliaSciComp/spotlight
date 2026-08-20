@@ -122,7 +122,12 @@ def run_pipeline(cfg=None, pipeline="basic", start_at=None, stop_after=None,
     # On its own line: `test_stage_windows` parses the stage list off the line above by
     # splitting on stage names, and a suffix containing "basic" reads as a stage.
     print(f"pipeline: {pipeline} -> {' -> '.join(stages)}")
-    print(f"apply_basic={cfg['apply_basic']} for every stage (set by the pipeline)")
+    # "for every stage" was a lie in both directions and it reads as a bug report: only
+    # int-stats and int-aggregate consult this flag, and `correct` overrides it from `mode`
+    # (mode=basic forces it True, see `correct._view`). Under `run basic` the old wording
+    # announced False for a pipeline whose whole point is applying BaSiC.
+    print(f"apply_basic={cfg['apply_basic']} for the stages that read it "
+          f"(int-stats, int-aggregate); the correct stage sets its own from mode={mode}")
     plan = [(s, _units(cfg, s, mode)) for s in stages]
     total = sum(len(u) for _, u in plan)
     print(f"{total} unit(s) across {len(stages)} stage(s), sequential, in this process")

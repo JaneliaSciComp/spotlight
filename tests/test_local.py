@@ -221,3 +221,22 @@ def test_the_output_pyramid_matches_a_numpy_downsample(tmp_path, monkeypatch):
     assert np.abs(got1[:nz].astype(np.int32) - binned(got0[:nz * 2])).max() <= 1
     tail = got0[nz * 2:].reshape(1, 1, y // 2, 2, x // 2, 2).mean(axis=(1, 3, 5))
     assert np.abs(got1[nz:].astype(np.int32) - tail).max() <= 1
+
+
+def test_the_apply_basic_banner_does_not_contradict_the_correct_stage(capsys, monkeypatch):
+    """`run basic` prints apply_basic=False and then applies BaSiC, which reads as a bug.
+
+    The flag is right -- stats/qstack must fit the fields from RAW voxels -- so the banner
+    is what has to say so. Pins that it names `mode`, which is what actually decides.
+    """
+    from spotlight import correct, local
+    monkeypatch.setattr(local, "_units", lambda cfg, stage, mode: [])
+    local.run_pipeline({"apply_basic": True}, "basic", dry_run=True)
+    out = capsys.readouterr().out
+    assert "apply_basic=False" in out
+    assert "for every stage" not in out
+    assert "mode=basic" in out
+    # and the stage really does correct, despite that False
+    view = correct._view({"apply_basic": False, "input_basic_path": "",
+                          "output_basic_path": ""}, "basic")
+    assert view["apply_basic"] is True
