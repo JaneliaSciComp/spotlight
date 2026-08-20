@@ -9,6 +9,7 @@ layout from OME-NGFF metadata rather than assuming a directory convention.
 
 import json
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -268,6 +269,33 @@ def slots(default=8):
     return max(1, min(int(default), os.cpu_count() or int(default)))
 
 
+def _locking_mode():
+    """`file_io_locking` mode: tensorstore's default everywhere except a macOS mount.
+
+    tensorstore's default (`os`) takes an OS-level lock per file. An SMB share does not
+    honour it, and the write then fails on CLOSE with a bare EIO -- "Failed to close file
+    descriptor: Input/output error", `file_descriptor.cc:66`, no mention of locking. It is
+    not flaky hardware and not a concurrency limit: measured on `//prfs.hhmi.org/tavakolilab`
+    over smbfs, writing a 1920x1920 n5 array 3/3 failed on the default and 3/3 succeeded
+    with `lockfile`, which takes the same lock through a sidecar file instead. `file_io_sync`
+    stays on, so durability is unchanged; only the lock mechanism moves. Full matrix and the
+    syscall probes that came up empty: CLAUDE.md.
+
+    Deliberately NOT applied on Linux: the cluster writes to `/nrs` and works, and `os`
+    locking is what it has been measured with. The `cwd` test is the cheap proxy for "this
+    run's data is on a mount" -- every stage runs from the experiment directory (see
+    `_load_toml_config`), so on this layout that is where the output lives too. Getting the
+    proxy wrong costs a local run a lock file per key and nothing else; set
+    SPOTLIGHT_IO_LOCKING to `os` / `lockfile` / `none` / `non_atomic` to decide explicitly.
+    """
+    mode = os.getenv("SPOTLIGHT_IO_LOCKING")
+    if mode:
+        return mode
+    if sys.platform == "darwin" and str(Path.cwd().resolve()).startswith("/Volumes/"):
+        return "lockfile"
+    return None
+
+
 def _context_spec():
     # Not `config.stage_cores`: `_context()` is memoised process-wide and called without a
     # cfg in hand, so there is no stage to attribute it to. Floored at 2 so a 1-slot job
@@ -275,12 +303,16 @@ def _context_spec():
     n = slots(os.cpu_count() or 8)
     io = int(os.getenv("SPOTLIGHT_IO_CONCURRENCY", str(max(2, n // 2))))
     copy = int(os.getenv("SPOTLIGHT_COPY_CONCURRENCY", str(max(2, n))))
-    return {
+    spec = {
         "data_copy_concurrency": {"limit": copy},
         "file_io_concurrency": {"limit": io},
         "cache_pool": {"total_bytes_limit":
                        int(os.getenv("SPOTLIGHT_CACHE_BYTES", 512 * 2**20))},
     }
+    mode = _locking_mode()
+    if mode:
+        spec["file_io_locking"] = {"mode": mode}
+    return spec
 
 
 _SHARED_CONTEXT = None
