@@ -84,15 +84,24 @@ def ensure_log_dirs(cfg):
             print(f"created log directory {d} (for {key})")
 
 
-def _runlimit(cfg):
-    """The ` -W <minutes>` suffix, or "" when the ceiling is disabled.
+# `bsub -Q`: requeue the element instead of failing it. 140 is the run-limit kill and
+# nothing else -- LSF sends SIGUSR2 and 128+12 = 140. Not configurable because it does not
+# vary by experiment the way the run limit does; the two forms worth hand-editing are
+# `140 137` (SIGKILL, for a job too wedged to take SIGUSR2) and `EXCLUDE(140)` (keeps the
+# retry off the host that just wedged -- valid only for a 1-slot stage). See CLAUDE.md.
+REQUEUE_EXIT_CODES = "140"
+
+
+def _watchdog(cfg):
+    """The ` -W <minutes> -Q "140"` suffix: kill a wedged element, then requeue it.
 
     An element that blocks on a wedged NFS mount does not fail -- it holds its slots until
-    someone notices. `-W` is the only thing here that bounds that; see
-    `lsf_runlimit_minutes` in `config.DEFAULTS` for the measurement it comes from.
+    someone notices. `-W` is the only thing that bounds that, and `-Q` is what turns the
+    kill into another attempt instead of a hole in the output. Both are pointless without
+    the other: `-W` alone loses the tile, `-Q` alone never fires.
     """
     minutes = int(cfg.get("lsf_runlimit_minutes", _config.DEFAULTS["lsf_runlimit_minutes"]))
-    return f" -W {minutes}" if minutes > 0 else ""
+    return f" -W {minutes} -Q \"{REQUEUE_EXIT_CODES}\"" if minutes > 0 else ""
 
 
 def _bsub(cfg, name, cores, out_suffix, command, array=None, n_arrays=1):
@@ -104,7 +113,7 @@ def _bsub(cfg, name, cores, out_suffix, command, array=None, n_arrays=1):
     job = f"{name}[1-{array}]{_throttle(cfg, cores, array, n_arrays)}" if array else name
     index = "_%I" if array else ""
     return (f'bsub -J "{job}"'
-            f" -n {cores} -P {cfg['lsf_project']}{_runlimit(cfg)}"
+            f" -n {cores} -P {cfg['lsf_project']}{_watchdog(cfg)}"
             f" -o {cfg['output_stem']}_{out_suffix}{index}.txt"
             f" -e {cfg['error_stem']}_{out_suffix}{index}.txt"
             f" '{command}'")
