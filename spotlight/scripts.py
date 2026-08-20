@@ -84,6 +84,17 @@ def ensure_log_dirs(cfg):
             print(f"created log directory {d} (for {key})")
 
 
+def _runlimit(cfg):
+    """The ` -W <minutes>` suffix, or "" when the ceiling is disabled.
+
+    An element that blocks on a wedged NFS mount does not fail -- it holds its slots until
+    someone notices. `-W` is the only thing here that bounds that; see
+    `lsf_runlimit_minutes` in `config.DEFAULTS` for the measurement it comes from.
+    """
+    minutes = int(cfg.get("lsf_runlimit_minutes", _config.DEFAULTS["lsf_runlimit_minutes"]))
+    return f" -W {minutes}" if minutes > 0 else ""
+
+
 def _bsub(cfg, name, cores, out_suffix, command, array=None, n_arrays=1):
     """`array` is the element COUNT (the array is always 1-N), or None for a single job.
 
@@ -93,7 +104,7 @@ def _bsub(cfg, name, cores, out_suffix, command, array=None, n_arrays=1):
     job = f"{name}[1-{array}]{_throttle(cfg, cores, array, n_arrays)}" if array else name
     index = "_%I" if array else ""
     return (f'bsub -J "{job}"'
-            f" -n {cores} -P {cfg['lsf_project']}"
+            f" -n {cores} -P {cfg['lsf_project']}{_runlimit(cfg)}"
             f" -o {cfg['output_stem']}_{out_suffix}{index}.txt"
             f" -e {cfg['error_stem']}_{out_suffix}{index}.txt"
             f" '{command}'")

@@ -46,6 +46,14 @@ DEFAULTS = {
     "output_stem": "",
     "error_stem": "",
     "lsf_project": "",
+    # `bsub -W`: a wall-clock ceiling per element, in minutes. 0 disables it.
+    #
+    # This is a HOST watchdog, not a runtime estimate. Three `int-apply` elements of the
+    # 560-element mouse_hipp_3_channel array (144/409/419) wedged for 12-14 h on a single
+    # host, e10u18 -- see CLAUDE.md. Every other element on every other host finished in
+    # 99-209 s. Set this well above the slowest healthy element and low enough that a
+    # wedged mount costs minutes, not a night.
+    "lsf_runlimit_minutes": 60,
     # Both the stage's `bsub -n` and its numpy ThreadPoolExecutor. Measured at 2.27
     # cores of actual CPU (477 s over a 210 s wall) and 5.8 GB peak RSS, so this is a
     # compute figure now, not the memory request it used to be at 48 -- Janelia hands
