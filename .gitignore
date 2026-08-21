@@ -5,3 +5,4 @@ __pycache__/
 bench_results/
 # Generated per experiment, into the experiment's own directory -- never the checkout.
 bsub_*.sh
+.DS_Store
