@@ -57,10 +57,10 @@ def test_stats_pass_writes_what_the_reduction_says(store, tmp_path):
     quantiles.calculate_camera_stats(store, 0, 1, 1)
 
     xs, ys = stores.xy_chunks((X, Y), (32, 32))[0]
-    # Derived the way the pass derives it, because the block depth is format-dependent:
-    # sharded zarr3 sizes it off shard_size[2] * z_batch, everything else off chunk_size[2].
-    z_blocks = quantiles._z_blocks(store, 63)
-    p = block_size(quantiles._z_depth(store, z_blocks[0][1] - z_blocks[0][0]))
+    # Derived the way the pass derives it: one sorted block over the whole Z-column, so a
+    # true per-pixel quantile. Sharded zarr3 reads the column in shard-deep passes and
+    # concatenates them, giving the same full column this fit sees in one shot.
+    p = block_size(63)
     expected = None
     for s in setups:
         a = np.ascontiguousarray(volume(s, 63)[:, ys, xs].T)      # (X, Y, Z)

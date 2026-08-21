@@ -65,34 +65,20 @@ def _concurrency(cfg, n_setups, bytes_per_setup):
     return max(1, min(n_setups, budget // max(bytes_per_setup, 1)))
 
 
-def _z_depth(cfg, read_depth):
-    """The block depth `OrderStats` is sized from, for a chunk `read_depth` slices deep."""
-    if cfg["input_format"] == "zarr3":
-        configured = cfg["shard_size"][2] * cfg["z_batch"]
-    else:
-        configured = cfg["chunk_size"][2]
-    return min(configured, read_depth)
+def _z_read_blocks(cfg, z_total):
+    """The contiguous Z ranges one XY chunk is read in, covering [0, z_total) exactly.
 
-
-def _z_blocks(cfg, z_total):
-    """The Z blocks one chunk is read in.
-
-    Only sharded zarr3 splits Z at all; everything else reads the whole column in one
-    pass. Every block must be EXACTLY the same depth, because `OrderStats` accumulators
-    sized off different depths cannot merge. If Z is not a multiple of the block size the
-    last block is SLID BACK rather than truncated -- a few Z-slices get double-counted in
-    the overlap, which is statistically negligible for per-pixel quantiles pooled over
-    many tiles, and keeps every block mergeable.
+    Sharded zarr3 is read in shard-deep batches (`shard_size[2] * z_batch`) so each read
+    lands on whole shards; every other format reads the column in one pass. The batches
+    are CONCATENATED into the full Z-column before the quantile is taken, so -- unlike a
+    block merge -- they need not be equal depth: the last is simply shorter. Concatenating
+    the samples (rather than merging per-batch order statistics) is what makes the result
+    a TRUE per-pixel quantile of the whole column instead of an average of per-block ones.
     """
     if cfg["input_format"] != "zarr3":
         return [(0, z_total)]
     sz = cfg["shard_size"][2] * cfg["z_batch"]
-    if z_total <= sz:
-        return [(0, z_total)]
-    starts = list(range(0, z_total, sz))
-    starts[-1] = min(starts[-1], z_total - sz)
-    starts = sorted(set(starts))
-    return [(z, z + sz) for z in starts]
+    return [(z, min(z + sz, z_total)) for z in range(0, z_total, sz)]
 
 
 def empty_threshold(cfg, camera):
@@ -176,17 +162,28 @@ def write_background_quantile_partial(cfg, camera, job, acc):
 # ─── the pass ─────────────────────────────────────────────────────────────────
 
 
-async def _fit_setup(src, xs, ys, zr, p, sem, pool, loop, timing):
-    """Read one setup's chunk and reduce it. The SEMAPHORE IS NOT RELEASED HERE.
+async def _fit_setup(src, xs, ys, z_reads, p, sem, pool, loop, timing):
+    """Read one setup's whole Z-column for this XY chunk and reduce it. The SEMAPHORE IS
+    NOT RELEASED HERE.
 
     The caller releases it after consuming the result, so at most `limit` finished-but-
     unmerged accumulators are alive at once. Releasing on completion instead would let
     every task pile up its buffer while the fold is still waiting on the first one, which
     bounds nothing.
+
+    Sharded zarr3 arrives as several shard-deep reads (`z_reads`) issued together and
+    CONCATENATED along Z; every other format is a single read. Either way the reduction
+    below sees the full column and sorts it once.
     """
     await sem.acquire()
     t0 = time.perf_counter()
-    block = await src[zr[0]:zr[1], ys, xs].read(order="C")   # (Z, Y, X)
+    if len(z_reads) == 1:
+        z0, z1 = z_reads[0]
+        block = await src[z0:z1, ys, xs].read(order="C")     # (Z, Y, X)
+    else:
+        parts = await asyncio.gather(
+            *(src[z0:z1, ys, xs].read(order="C") for z0, z1 in z_reads))
+        block = np.concatenate(parts, axis=0)                # full Z-column
     t1 = time.perf_counter()
     a = np.ascontiguousarray(block.T)                        # -> (X, Y, Z)
     st = await loop.run_in_executor(pool, OrderStats.fit, a, p)
@@ -224,8 +221,11 @@ async def _run(cfg, camera, start, stop):
             f"N_QUARTILES={N_QUARTILES}, so per-pixel quantiles are undefined. Skip this "
             "stats job: save_qstack() feeds BaSiC the raw slices directly.")
 
-    z_blocks = _z_blocks(cfg, cam[2])
-    p = block_size(_z_depth(cfg, z_blocks[0][1] - z_blocks[0][0]))
+    z_reads = _z_read_blocks(cfg, cam[2])
+    # One sorted block over the whole Z-column -> a TRUE per-pixel quantile. block_size
+    # rounds the depth down to a multiple of N_QUARTILES, discarding a few trailing
+    # slices exactly as the Julia pipeline did.
+    p = block_size(cam[2])
 
     # Measured here because this pass already owns the `OrderStats` the qstack is made of,
     # so the profile cannot disagree with it about block geometry. Needs the emptiness
@@ -244,51 +244,51 @@ async def _run(cfg, camera, start, stop):
     stats_arrays = {name: stores.open_stats_array(cfg, camera, name, s0[:2], scale=lvl, ctx=ctx)
                     for name in ("minima", "maxima", *(f"q{q:03d}" for q in LEVELS))}
 
-    # One in-flight setup holds its chunk (uint16) plus the sorted-block buffer and the
-    # float64 `value` the reduction builds from it.
+    # One in-flight setup holds its whole Z-column for this XY chunk (uint16, plus a
+    # transient copy from the transpose/concat) and the float64 `value` buffer the
+    # reduction builds from it. Reading the full column is the memory cost of a true
+    # per-pixel quantile; for sharded zarr3 it means holding one column's worth of every
+    # shard the column crosses -- accepted deliberately.
     tile = cfg["chunk_size"][0] * cfg["chunk_size"][1]
-    depth = z_blocks[0][1] - z_blocks[0][0]
-    bytes_per_setup = tile * (2 * depth * 2 + p * 8)
+    bytes_per_setup = tile * (3 * cam[2] * 2 + p * 8)
     limit = _concurrency(cfg, len(setups), bytes_per_setup)
     sem = asyncio.Semaphore(limit)
     loop = asyncio.get_running_loop()
     timing = {"t_read": 0.0, "t_compute": 0.0, "t_write": 0.0, "bytes_in": 0,
               "n_reads": 0, "concurrency": limit, "block_size": p,
-              "n_z_blocks": len(z_blocks), "n_setups": len(setups)}
+              "n_z_reads": len(z_reads), "n_setups": len(setups)}
     t_start = time.perf_counter()
     print(f"calculating statistics: camera {camera + 1}, {len(setups)} setups, "
           f"chunks {start}..{stop} of {len(chunks)}, cam_size {cam}, "
-          f"{len(z_blocks)} z block(s) of depth {p}, threshold {threshold}, level {lvl}")
+          f"1 sorted block of depth {p} read in {len(z_reads)} pass(es), "
+          f"threshold {threshold}, level {lvl}")
 
     bar = Progress(stop - start + 1, f"stats camera {camera + 1}")
     with ThreadPoolExecutor(max_workers=cfg["n_cores_stats"]) as pool:
         for idx in range(start, stop + 1):
             xs, ys = chunks[idx - 1]
+            tasks = [asyncio.ensure_future(
+                         _fit_setup(src, xs, ys, z_reads, p, sem, pool, loop, timing))
+                     for src in srcs]
             mstat = None
-            for zr in z_blocks:
-                tasks = [asyncio.ensure_future(
-                             _fit_setup(src, xs, ys, zr, p, sem, pool, loop, timing))
-                         for src in srcs]
-                partial = None
-                try:
-                    for t in tasks:
-                        st = await t
-                        sem.release()
-                        # Before the merge, which consumes the accumulator in place: the
-                        # background profile needs each setup's OWN quantiles, not their
-                        # average.
-                        if acc is not None:
-                            acc.accumulate(st, threshold)
-                        partial = st if partial is None else partial.merge(st)
-                except BaseException:
-                    for t in tasks:
-                        t.cancel()
-                    raise
-                mstat = partial if mstat is None else mstat.merge(partial)
+            try:
+                for t in tasks:
+                    st = await t
+                    sem.release()
+                    # Before the merge, which consumes the accumulator in place: the
+                    # background profile needs each setup's OWN quantiles, not their
+                    # average.
+                    if acc is not None:
+                        acc.accumulate(st, threshold)
+                    mstat = st if mstat is None else mstat.merge(st)
+            except BaseException:
+                for t in tasks:
+                    t.cancel()
+                raise
             tw = time.perf_counter()
             await _save_stats(stats_arrays, xs, ys, mstat)
             timing["t_write"] += time.perf_counter() - tw
-            timing["n_reads"] += len(srcs) * len(z_blocks)
+            timing["n_reads"] += len(srcs) * len(z_reads)
             bar.advance()
     bar.close()
 
