@@ -250,6 +250,72 @@ Each looked like the answer and each is disproved by a probe in this file's hist
 EIO here does not mean the bytes are missing, so "the file is there" is not evidence the
 write succeeded.
 
+## Windows: local pipeline only, and the separator is the whole port
+
+`win-64` is in `pixi.toml`'s `platforms` and resolves from the same lock — same numpy
+1.26.4 / scipy 1.12.0 as the other two, only the build strings differ, so the pocketfft
+argument for one lock still holds. Adding it changed nothing for `linux-64` / `osx-arm64`;
+the lock diff was pure insertion.
+
+**The cluster is always Linux.** Nothing under `scripts.py` (bsub, `runner()`,
+`MALLOC_ARENA_MAX`) or `bench/` has to work on Windows, which is what makes this small.
+`tests/test_bench_scripts.py` is `skipif(os.name == "nt")` for that reason — it drives
+`bash` and a chmod'd stub, and there is nothing there to port.
+
+### Normalise the ROOTS, not the ten kvstore paths
+
+Every path this package hands tensorstore's `file` driver is a `/`-joined suffix on a
+configured root (`formats._path`, `stores.write_group_metadata`,
+`qstack.read_quantile_stack`, …), so a root of `C:\data\exp` produces the mixed
+`C:\data\exp/setup0/timepoint0/s0`. Python's `open()` does not care; the driver has to
+parse the key. Forward slashes are what both platforms accept.
+
+So the fix is `config._slashes` inside `expand()` — one function, covering all four
+*_path keys plus `results_root`, and a no-op wherever `os.sep != "\\"` because `\` is a
+legal filename character on Linux and macOS.
+
+Two things that are deliberate:
+
+- **Not `Path.as_posix()` on the roots.** It resolves nothing here and would collapse a
+  UNC root's leading `\\server\share` to a single separator. A plain `.replace()` keeps it
+  as `//server/share`.
+- **`stores.open_stats_array` is the one exception** and uses `.as_posix()`, because
+  `stats_array_path` builds its path by `Path` joining rather than by `/`-joining a root,
+  so `_slashes` never sees it.
+
+That exception is only *testable* from a POSIX host via `monkeypatch.setattr(stores,
+"Path", PureWindowsPath)` — `Path` is `PosixPath` here, so it cannot produce a backslash
+to catch. Without that the mutation `.as_posix()` → `str()` survives, which is how it was
+found.
+
+### `_machine_memory()` had a silent Windows floor
+
+`os.sysconf` does not exist on Windows, so every local Windows run fell to the 8 GiB
+fallback and sized `_concurrency` against a 4 GiB budget — on any workstation, whatever it
+has. Now falls through to `kernel32.GetPhysicallyInstalledSystemMemory` (ctypes, no
+psutil) before the 8 GiB default, which stays for the VMs where that SMBIOS read fails.
+
+### Unverified on Windows
+
+Nothing here has been run on Windows — it is a port by inspection, and these are the
+places to look first if it misbehaves:
+
+- **`_locking_mode()` returns `None` on Windows**, i.e. tensorstore's default `os`
+  locking, which is `LockFileEx`. That is right for local NTFS. A mapped drive or a UNC
+  path to an SMB server is the case that broke on macOS smbfs, and it is untested here —
+  if a write dies on close, try `SPOTLIGHT_IO_LOCKING=lockfile` before reading any code.
+  Deliberately not extended to Windows on a guess: the darwin branch is there because it
+  was measured 3/3 against 3/3, and a second unmeasured branch would dilute that.
+- **The 260-character path limit.** Zarr chunk keys are deep. Python 3.6+ ships the
+  `longPathAware` manifest, so this only bites without the `LongPathsEnabled` policy.
+- **`os.replace` in `_atomic_write_json`** fails on Windows if the destination is open in
+  another process. The local driver is single-process, so this is only a risk if someone
+  has the store open in a viewer.
+
+Checked and genuinely fine, so don't re-audit them: asyncio + `ThreadPoolExecutor`,
+`progress.py` (`\r` and ASCII only), `os.chmod(0o755)` (a harmless near-no-op),
+`$HOME` via `expanduser`.
+
 ## `apply_basic` is about READING, not about whether BaSiC gets applied
 
 `run basic` prints `apply_basic=False` and then applies BaSiC. Both are correct; the flag

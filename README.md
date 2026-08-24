@@ -10,8 +10,20 @@ Supported formats: OME-Zarr v2/v3, N5, OME-TIFF (output only)
 ## Install
 
 ```bash
-pixi install                 # both linux-64 and osx-arm64 resolve from one lock
+pixi install                 # linux-64, osx-arm64 and win-64 all resolve from one lock
 ```
+
+The cluster workflow below is Linux-only (it shells out to `bsub`). Windows runs the
+**local workflow** only. Two Windows-specific things to know:
+
+* **Write paths in the toml with forward slashes**, or single-quoted: `"C:\data\exp"` is
+  not valid TOML — `\d` is an unrecognised escape and `tomllib` rejects the whole file.
+  `"C:/data/exp"` and `'C:\data\exp'` both work, and `set_config()` escapes correctly on
+  your behalf. Backslashes are normalised to `/` internally either way.
+* **Enable long paths** if a store lives more than a few directories deep. Zarr chunk keys
+  are long, and the 260-character default limit surfaces as a confusing tensorstore write
+  error. `Computer Configuration > Administrative Templates > System > Filesystem > Enable
+  Win32 long paths`, or the `LongPathsEnabled` registry DWORD.
 
 ## Configure
 

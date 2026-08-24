@@ -2,10 +2,14 @@
 name = "spotlight"
 version = "0.1.0"
 channels = ["conda-forge"]
-# Both platforms in ONE lock on purpose: scipy bundles its own pocketfft, so letting
-# the laptop and the cluster resolve to different scipy builds would make the BaSiC
-# DCT differ between where the port is tested and where it is run.
-platforms = ["linux-64", "osx-arm64"]
+# Every platform in ONE lock on purpose: scipy bundles its own pocketfft, so letting
+# the laptop and the cluster resolve to different scipy VERSIONS would make the BaSiC
+# DCT differ between where the port is tested and where it is run. All three resolve to
+# numpy 1.26.4 / scipy 1.12.0; only the build strings differ, which is unavoidable.
+#
+# win-64 runs the LOCAL path only (`python -m spotlight run ...`). The cluster is always
+# linux-64, so nothing under `scripts.py` or `bench/` has to work on Windows.
+platforms = ["linux-64", "osx-arm64", "win-64"]
 
 [tasks]
 test = "python -m pytest tests -q"

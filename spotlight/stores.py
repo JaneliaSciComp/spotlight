@@ -97,12 +97,24 @@ def _machine_memory():
     far too large on a laptop -- and getting it too large is the one that hurts, since
     the process is then competing with everything else the user is running.
 
-    `os.sysconf` covers Linux and macOS with no dependency; anything else falls back.
+    `os.sysconf` covers Linux and macOS with no dependency. It does not exist on Windows,
+    and the 8 GiB fallback is not harmless there: it is the ONLY branch a local Windows run
+    can reach, so every `_concurrency` bound on a 128 GiB workstation would be sized against
+    4 GiB. `GetPhysicallyInstalledSystemMemory` is the stdlib-only answer (ctypes, no psutil)
+    -- it reads SMBIOS, so it can fail under a VM, which is what the fallback is still for.
     """
     try:
         return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
     except (ValueError, OSError, AttributeError):
-        return 8 * 2**30
+        pass
+    try:
+        import ctypes
+        kb = ctypes.c_ulonglong(0)
+        if ctypes.windll.kernel32.GetPhysicallyInstalledSystemMemory(ctypes.byref(kb)):
+            return kb.value * 1024
+    except (AttributeError, OSError):
+        pass
+    return 8 * 2**30
 
 
 def _open(spec, ctx, **kwargs):
@@ -198,8 +210,11 @@ def open_stats_array(cfg, camera, stat, xy_size, scale=0, ctx=None, rebuild=Fals
     """
     spec = {
         "driver": "n5",
+        # `as_posix`, not `str`: this is the only kvstore path in the package built by
+        # `Path` joining rather than by `/`-joining onto a config root, so it is the only
+        # one that would still carry backslashes on Windows after `config._slashes`.
         "kvstore": {"driver": "file",
-                    "path": str(stats_array_path(cfg, camera, stat, scale))},
+                    "path": stats_array_path(cfg, camera, stat, scale).as_posix()},
         "metadata": {
             "dimensions": list(xy_size),
             "blockSize": list(cfg["chunk_size"][:2]),

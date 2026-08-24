@@ -152,3 +152,47 @@ def test_stage_cores_resolves_for_every_stage_that_asks(monkeypatch):
     assert config.stage_cores({}, "both") == config.DEFAULTS["n_cores_int_correct"]
     # The two correction pipelines genuinely differ, which is the reason for the map.
     assert config.CORES_KEY["basic"] != config.CORES_KEY["both"]
+
+
+def test_windows_roots_reach_tensorstore_with_forward_slashes(tmp_path, monkeypatch):
+    """Every kvstore path is a `/`-joined suffix on a configured root, so a Windows root
+    has to be normalised at the root or the key comes out mixed-separator. Driven through
+    `_input_location`/`stats_array_path` rather than `_slashes` directly -- those are what
+    tensorstore is actually handed, and testing the helper alone would not catch a root
+    that never goes through it."""
+    from spotlight import stores
+    from spotlight.formats import _input_location
+
+    monkeypatch.setattr(config.os, "sep", "\\")          # pretend to be Windows
+    monkeypatch.chdir(tmp_path)
+    config.set_config(input_basic_path=r"C:\data\exp.n5", output_basic_path=r"C:\out.n5",
+                      results_root=r"\\prfs\lab\res", last_setup=0, input_format="n5")
+    cfg = config.load_config()
+
+    assert cfg["input_basic_path"] == "C:/data/exp.n5"
+    assert cfg["results_root"] == "//prfs/lab/res"       # UNC keeps its double separator
+    path, _ = _input_location(config.basic_view(cfg), 0, 0)
+    assert "\\" not in path
+
+
+def test_the_stats_array_kvstore_path_is_posix(monkeypatch, tmp_path):
+    """The one kvstore path built by `Path` joining rather than by `/`-joining a root, so
+    `config._slashes` cannot reach it -- on Windows `str()` would hand tensorstore
+    `C:\\res\\camera1\\minima\\s0`. `PureWindowsPath` is what makes that reachable from a
+    POSIX host; without it the mutation `.as_posix()` -> `str()` survives."""
+    from pathlib import PureWindowsPath
+    from spotlight import stores
+
+    seen = {}
+    monkeypatch.setattr(stores, "Path", PureWindowsPath)
+    monkeypatch.setattr(stores, "_open", lambda spec, ctx, **kw: seen.update(spec))
+    stores.open_stats_array({"results_root": r"C:\res", "chunk_size": [32, 32, 32]},
+                            0, "minima", (64, 64))
+    assert seen["kvstore"]["path"] == "C:/res/camera1/minima/s0"
+
+
+def test_slashes_is_a_noop_off_windows(monkeypatch):
+    """`\\` is a legal filename character on Linux and macOS, so normalising there would
+    corrupt a real path rather than fix one."""
+    monkeypatch.setattr(config.os, "sep", "/")
+    assert config._slashes(r"/data/weird\name.n5") == r"/data/weird\name.n5"

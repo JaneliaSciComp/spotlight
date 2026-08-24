@@ -17,6 +17,12 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 RUN_ARM = ROOT / "bench" / "run_arm.sh"
 
+# These drive `bash` and a chmod'd stub on PATH. The benchmark harness targets the LSF
+# cluster, which is always linux-64 -- Windows runs the local pipeline only -- so there is
+# nothing here to port, just a suite that should stay green on a Windows checkout.
+pytestmark = pytest.mark.skipif(os.name == "nt",
+                                reason="bench/ is cluster-only (Linux); needs bash")
+
 
 @pytest.fixture
 def stub_python(tmp_path):

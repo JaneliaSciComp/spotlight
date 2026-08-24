@@ -136,8 +136,27 @@ BASIC_DEFAULTS = {
     "override_darkfield": False,
 }
 
-# Paths in the toml may be written with a literal `$HOME`.
+# Paths in the toml may be written with a literal `$HOME`. Together with the three keys
+# `_load_toml_config` expands itself (the two `*_intensity_path`s and `results_root`) this
+# is every path key, so `expand` below is the only place either fixup has to happen.
 _PATH_KEYS = ("input_basic_path", "output_basic_path", "output_stem", "error_stem")
+
+
+def _slashes(path):
+    """A path with forward slashes, which Windows accepts everywhere and tensorstore wants.
+
+    The kvstore paths this package hands tensorstore are built by `/`-joining a suffix onto
+    a configured root, so on Windows a root of `C:\\data\\exp` yields the mixed
+    `C:\\data\\exp/setup0/timepoint0/s0`. Python's own `open()` does not care; tensorstore's
+    `file` driver is the one that has to parse the key, and forward slashes are the form
+    both platforms agree on. Normalising the ROOTS is the whole fix -- everything derived
+    from them is already `/`-joined.
+
+    Not `Path.as_posix()`: that resolves nothing here and would mangle a UNC root, whose
+    leading `\\\\server\\share` must stay a double separator. A plain replace keeps it as
+    `//server/share`. No-op on Linux and macOS, where `\\` is a legal filename character.
+    """
+    return path.replace("\\", "/") if os.sep == "\\" else path
 
 
 def config_path():
@@ -191,7 +210,7 @@ def load_config(require_intensity_io=False):
     for key, default in DEFAULTS.items():
         cfg.setdefault(key, default)
     for key in _PATH_KEYS:
-        cfg[key] = str(cfg[key]).replace("$HOME", os.path.expanduser("~"))
+        cfg[key] = _slashes(str(cfg[key]).replace("$HOME", os.path.expanduser("~")))
     if cfg["basic_stats_level"] < 0:
         raise ValueError(f"basic_stats_level must be >= 0, got {cfg['basic_stats_level']}")
     return cfg
@@ -315,7 +334,7 @@ def _load_toml_config(require_intensity_io=True):
     cfg = _tables.get("spotlight") or _tables["BigFlatFieldIlluminator"]
 
     def expand(s):
-        return s.replace("$HOME", os.path.expanduser("~"))
+        return _slashes(s.replace("$HOME", os.path.expanduser("~")))
 
     for key in ("input_intensity_path", "output_intensity_path"):
         if key in cfg:
