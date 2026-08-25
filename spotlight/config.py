@@ -60,8 +60,8 @@ DEFAULTS = {
     # out 15 GB per slot, and read concurrency comes from `_concurrency`, not from here.
     "n_cores_stats": 3,
     "n_cores_correction": 20,
-    "n_cores_int_stats": 20,
-    "n_cores_int_aggregate": 20,
+    "n_cores_int_stats": 1,
+    "n_cores_int_aggregate": 5,
     "n_cores_int_correct": 20,
     "chunks_per_job": 64,
     "max_concurrent_cores": 2000,
