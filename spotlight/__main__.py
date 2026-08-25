@@ -1,12 +1,12 @@
 """`python -m spotlight <stage> [args]` -- the single entry point every job runs.
 
-Both pipelines dispatch from here: the BaSiC stages and the per-tile intensity stages
+Both pipelines dispatch from here, the BaSiC stages and the per-tile intensity ones
 (`int-*`). That is what lets `scripts.py` have one runner string instead of one per
 pipeline.
 
 Camera and setup arguments are 0-BASED, matching the intensity stages. On disk cameras
-stay 1-based (`camera1/`, `Flat-field.tif`), as the Julia package wrote them. Nobody
-types these by hand -- the `submit` stage generates them.
+stay 1-based (`camera1/`, `Flat-field.tif`), as the Julia package wrote them. Nobody types
+these by hand -- the `submit` stage generates them.
 """
 
 import argparse
@@ -16,7 +16,8 @@ import sys
 
 def _index_fallback(value):
     """A missing positional falls back to this job's LSF array index, as the intensity
-    stages already do, so a bsub line can omit it."""
+    stages already do, so a bsub line can omit it.
+    """
     if value is not None:
         return value
     idx = os.environ.get("LSB_JOBINDEX")

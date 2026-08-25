@@ -11,21 +11,17 @@ grows past ~500 lines, that is the seam to cut on.
 
 What it does, in order:
 
-1. Read every setup's per-tile stats (Otsu threshold, foreground mean/std) and classify
-   each tile with `_classify`.
+1. Read every setup's per-tile stats (threshold, foreground mean/std) and classify each
+   tile with `_classify`.
 2. Discover every physically-overlapping tile pair from the SpimData2 `dataset.xml`
-   (config key `dataset_xml`) -- within-camera AND cross-camera.
-3. Per pair, a robust log-gain constraint from the two tiles' foreground medians in the
-   shared region. `gain_estimator="intersection"` (default) compares the matched voxels
-   both tiles call foreground -- unbiased when the tiles are registered;
-   `"independent"` compares each tile's own distribution, which tolerates
-   misregistration but can be biased by a threshold/population mismatch.
-4. Solve a gain `g_s` by regularized global least squares; the correction is `raw/g_s`.
-   `gain_grouping="camera"` (default) shares one gain across a camera's tiles, which
-   robustly removes the sensor-level step between cameras -- many overlaps per camera pin
-   it, so it needs almost no shrinkage. `"tile"` solves one per tile (opt-in; keep
-   `gain_lambda` at ~0.1 to damp drift). The `lam -> 0` limit of the regularization is a
-   pure gauge anchor.
+   (config key `dataset_xml`), within-camera and cross-camera (`_all_overlap_pairs`).
+3. Per pair, one robust log-gain constraint from the two tiles' foreground medians in the
+   shared region (`_pair_gain_constraint`, tuned by `gain_estimator`).
+4. Solve a gain `g_s` by regularized global least squares (`_solve_tile_gains`); the
+   correction is `raw/g_s`. `gain_grouping="camera"` (default) shares one gain across a
+   camera's tiles, which robustly removes the sensor-level step between cameras -- many
+   overlaps per camera pin it, so it needs almost no shrinkage. `"tile"` solves one per
+   tile (opt-in; keep `gain_lambda` at ~0.1 to damp drift).
 5. Write `tile_gains.json` (gains, grouping/estimator, per-camera summary) and
    `intensity_target.json`: each setup's stats plus `corrected_mean`/`corrected_std`,
    which encode `g_s` so the correction stage computes `raw/g_s` without knowing about
@@ -33,8 +29,8 @@ What it does, in order:
    gain-equalized mean/std.
 
 Overlap-driven gains preserve real texture: neighbours whose shared region agrees keep
-equal gains, so genuine content differences survive. A per-tile-to-target match -- forcing
-every tile to one mean -- would erase them.
+equal gains, so genuine content differences survive. Matching every tile to one mean would
+erase them.
 
 CLI: `python -m spotlight int-aggregate`.
 """
@@ -97,12 +93,11 @@ def _view_setup_sizes(xml_root):
 def _view_registration_transforms(xml_root):
     """setup id -> composed 4x4 (pixel -> world) affine.
 
-    Each <ViewRegistration> lists its <ViewTransform>s outermost-first (e.g.
-    "Stitching Transform", then "Translation to Regular Grid", then
-    "calibration" last) -- BDV/BigStitcher convention composes them as
-    M_total = M_0 @ M_1 @ ... @ M_last, i.e. the LAST-listed transform
-    (calibration: pixel index -> physical units) is applied FIRST to a raw
-    pixel coordinate. Points are (x, y, z, 1) column vectors, matching the
+    Each <ViewRegistration> lists its <ViewTransform>s outermost-first (e.g. "Stitching
+    Transform", then "Translation to Regular Grid", then "calibration" last), and the
+    BDV/BigStitcher convention composes them as `M_total = M_0 @ M_1 @ ... @ M_last` -- so
+    the LAST-listed transform (calibration: pixel index -> physical units) applies FIRST
+    to a raw pixel coordinate. Points are (x, y, z, 1) column vectors, matching the
     <affine> string's row-major (x-row, y-row, z-row) layout.
     """
     transforms = {}
@@ -138,17 +133,17 @@ def _setup_world_bbox(setup, sizes, transforms):
 
 
 def _all_overlap_pairs(cfg):
-    """(pairs, sizes, transforms) where pairs is every physically-overlapping
-    tile pair across the WHOLE dataset -- `(setup_a, setup_b, world_bbox)` for
-    each pair whose world-space bounding boxes intersect, within-camera and
-    cross-camera alike. Within-camera overlaps matter: they are what let the
-    per-tile solve tell gain from content (a tile dim from its own gain reads
-    low against its same-camera neighbours on shared tissue; one dim from
-    content agrees with them). Overlap is discovered purely from the geometry,
-    so no camera-adjacency assumption is made.
+    """(pairs, sizes, transforms): every `(setup_a, setup_b, world_bbox)` whose two
+    world-space bounding boxes intersect, within-camera and cross-camera alike.
 
-    The pairwise test is O(N^2) but vectorized per row (a few seconds for a few
-    thousand tiles); only genuinely-overlapping pairs are materialized."""
+    Within-camera overlaps are what let the per-tile solve tell gain from content: a tile
+    dim from its own gain reads low against its same-camera neighbours on shared tissue,
+    one dim from content agrees with them. Overlap comes purely from the geometry, so no
+    camera adjacency is assumed.
+
+    The pairwise test is O(N^2) but vectorized per row -- a few seconds for a few thousand
+    tiles, and only real overlaps are materialized.
+    """
     xml_root = _parse_dataset_xml(cfg)
     sizes = _view_setup_sizes(xml_root)
     transforms = _view_registration_transforms(xml_root)
@@ -185,11 +180,12 @@ def _world_bbox_to_pixels(setup, world_bbox, sizes, transforms):
 
 
 def _overlap_ranges(setup, world_bbox, sizes, transforms, factor, shape):
-    """The setup's downsampled (z, y, x) ranges for a world-space bbox, from a
-    precomputed (fz, fy, fx) `factor` (level `stats_scale`) and downsampled
-    `shape` -- no array re-opening / pyramid re-read per call. Used by the
-    many-pair aggregate solve, where re-opening per pair would dominate the
-    runtime."""
+    """The setup's downsampled (z, y, x) ranges for a world-space bbox.
+
+    Takes a precomputed (fz, fy, fx) `factor` (level `stats_scale`) and downsampled
+    `shape` rather than re-opening the array: across this many pairs, one pyramid re-read
+    per pair would dominate the solve.
+    """
     px_min, px_max = _world_bbox_to_pixels(setup, world_bbox, sizes, transforms)
     fz, fy, fx = factor
     x_range = (int(px_min[0] // fx), int(np.ceil(px_max[0] / fx)))
@@ -207,10 +203,10 @@ GAIN_FLOOR_MODES = ("tile", *THRESHOLD_METHODS)
 def _floor_setting(cfg):
     """`gain_floor` validated: a float, or one of GAIN_FLOOR_MODES.
 
-    "tile" follows whatever `tile_threshold` selected. "otsu"/"li" name a METHOD
-    directly, which is what lets the gain solve gate on tissue while `tile_threshold = 0`
-    puts the apply stage in its all-pixels `uniform` mode -- the two settings answer
-    different questions and need not agree.
+    "tile" follows whatever `tile_threshold` selected. "otsu"/"li" name a METHOD directly,
+    which lets the gain solve gate on tissue while `tile_threshold = 0` puts the apply
+    stage in its all-pixels `uniform` mode. The two answer different questions and need
+    not agree.
     """
     mode = cfg.get("gain_floor") or "tile"
     if not isinstance(mode, str):
@@ -240,10 +236,9 @@ def _tile_floor(st, setting, setup):
 def _floor_label(setting, cache, setups):
     """What the gate is actually gating at, for the header line.
 
-    Reports the SOURCE recorded by the stats stage rather than the `gain_floor` setting,
-    because the setting's default only says "use the per-tile threshold" -- it does not
-    say what produced it. Printing the setting made a run with `tile_threshold = "li"`
-    announce `floor=otsu`.
+    Reports the SOURCE the stats stage recorded, not the `gain_floor` setting: the default
+    setting only says "use the per-tile threshold", not what produced it. Printing the
+    setting made a run with `tile_threshold = "li"` announce `floor=otsu`.
     """
     thrs = [cache[s]["thr"] for s in setups if s in cache]
     if not thrs:
@@ -258,35 +253,31 @@ def _floor_label(setting, cache, setups):
 def _pair_gain_constraint(setup_a, setup_b, world_bbox, sizes, transforms, cache, order,
                           estimator="intersection", min_fg=None, min_frac=None,
                           reject=None, accept=None):
-    """One log-gain constraint for an overlapping tile pair. Returns
-    `(a, b, log(med_a) - log(med_b), weight)` -- the target for `log g_a - log
-    g_b` (so raw/g equalizes the two on shared tissue) -- or None if the overlap
-    has too little foreground to trust. `cache[s]` carries the tile's open array,
-    downsample factor, shape, and Otsu threshold.
+    """One log-gain constraint for an overlapping tile pair.
+
+    Returns `(a, b, log(med_a) - log(med_b), weight)` -- the target for `log g_a - log
+    g_b`, so `raw/g` equalizes the two on shared tissue -- or None if the overlap holds
+    too little foreground to trust. `cache[s]` carries the tile's open array, downsample
+    factor, shape and threshold.
 
     `estimator` selects how the two medians are taken over the shared region:
-      * "intersection" (default): median over the voxels BOTH tiles call
-        foreground -- matched voxels, so the ratio is the true gain even when the
-        two tiles' Otsu thresholds differ. Unbiased when registration is good; a
-        few-voxel misregistration does bias it, which is why "independent" exists.
-      * "independent": each tile's foreground distribution above the common floor,
-        compared independently -- robust to registration error (no pixel-for-pixel
-        match), at the cost of a possible threshold/population bias. On this data,
-        switching independent -> intersection recovered the true camera step
-        (9/10 ratio 1.51 -> 1.66) while the common floor below already removed the
-        threshold-mismatch bias, so intersection is the default.
+      * "intersection" (default): median over the voxels BOTH tiles call foreground. Matched
+        voxels, so the ratio is the true gain even where the two thresholds differ -- but a
+        few voxels of misregistration bias it, which is why the other exists.
+      * "independent": each tile's own foreground distribution above the common floor.
+        Robust to registration error, at the cost of a possible population bias. On this
+        data, switching to intersection recovered the true camera step (9/10 ratio 1.51 ->
+        1.66) while the common floor had already removed the threshold-mismatch bias --
+        hence the default.
 
-    Both tiles are gated at a COMMON floor `max(thr_a, thr_b)`, NOT each at its
-    own Otsu threshold. The two per-tile thresholds routinely differ by
-    hundreds of gray levels (Otsu places the split per tile, so a tile with more
-    mid-intensity tissue lands lower); gating each tile at its own threshold then
-    compares medians over DIFFERENT intensity populations of the SAME tissue --
-    the lower-threshold tile sweeps in a band of dimmer voxels its neighbor
-    excludes, dragging its median down and manufacturing a spurious gain
-    difference (observed: a tile reading ~identically to its neighbors got a
-    0.92 gain purely from a ~200-level threshold gap). The shared floor makes
-    both medians span the same population, so the ratio measures gain, not the
-    threshold mismatch."""
+    Both tiles are gated at a COMMON floor `max(thr_a, thr_b)`, never each at its own
+    threshold. Per-tile thresholds routinely differ by hundreds of gray levels, and gating
+    each at its own compares medians over DIFFERENT intensity populations of the SAME
+    tissue: the lower-threshold tile sweeps in a band of dimmer voxels its neighbour
+    excludes, dragging its median down and manufacturing a gain difference (observed: a
+    tile reading ~identically to its neighbours got 0.92 purely from a ~200-level
+    threshold gap). A shared floor makes both medians span one population.
+    """
     ca, cb = cache[setup_a], cache[setup_b]
     za, ya, xa = _overlap_ranges(setup_a, world_bbox, sizes, transforms, ca["factor"], ca["shape"])
     zb, yb, xb = _overlap_ranges(setup_b, world_bbox, sizes, transforms, cb["factor"], cb["shape"])
@@ -353,18 +344,16 @@ def _pair_gain_constraint(setup_a, setup_b, world_bbox, sizes, transforms, cache
 def _drift(fg_a, fg_b, estimator):
     """Is the pair's ratio the same at low and high intensity? Empty string if so.
 
-    A true multiplicative gain gives ONE ratio at every intensity. A ratio that moves
-    with intensity means the two tiles' distributions differ in shape -- different
-    tissue in the overlap, or misregistration -- and the gate cannot tell that apart
-    from a gain. Since a forced constraint on sparse data is exactly where a content
-    difference gets mistaken for a gain, it has to be said out loud.
+    A true multiplicative gain gives ONE ratio at every intensity. A ratio that moves with
+    intensity means the two distributions differ in shape -- different tissue in the
+    overlap, or misregistration -- and the gate cannot tell that from a gain, so it has to
+    be said out loud.
 
     Only for "intersection", where the gate's mask makes `fg_a[i]` and `fg_b[i]` the SAME
-    voxel: the ratio is then per-voxel and needs no re-thresholding. The obvious
-    alternative -- re-take both medians above a higher absolute floor -- is wrong, and
-    wrong in a way that looks convincing: a common floor cuts more off the dimmer tile,
-    so a PERFECT gain of 2 reports a 43% drift. "independent" has no pairing, so it gets
-    no check rather than a misleading one.
+    voxel and the ratio is per-voxel. The obvious alternative -- re-take both medians
+    above a higher absolute floor -- is wrong in a way that looks convincing: a common
+    floor cuts more off the dimmer tile, so a PERFECT gain of 2 reports a 43% drift.
+    "independent" has no pairing, so it gets no check rather than a misleading one.
     """
     if estimator != "intersection":
         # Say so, rather than returning "" -- a silent pass and "not checked" look
@@ -387,26 +376,23 @@ def _drift(fg_a, fg_b, estimator):
 
 
 def _solve_tile_gains(constraints, setups, lam=0.1, group_of=None):
-    """Multiplicative gains from all pairwise overlap constraints, by regularized
-    global least squares in log space:
+    """Multiplicative gains from all pairwise overlap constraints, by regularized global
+    least squares in log space, solved as one sparse `scipy.sparse.linalg.lsqr`:
 
         min  Σ_(a,b) w_ab (log g_A - log g_B - d_ab)^2  +  lam Σ_g (log g_g)^2
 
-    where d_ab = log(med_a) - log(med_b), w_ab is the overlap foreground size
-    (normalized by its median so `lam` is scale-free), and A/B are the GROUPS
-    tiles a/b belong to (`group_of[a]`, `group_of[b]`). `group_of=None` solves
-    one gain per tile (group = the tile itself); passing a setup->camera map
-    solves one gain per CAMERA (every tile in a camera shares it). Either way the
-    return maps every setup to its solved gain.
+    `d_ab = log(med_a) - log(med_b)`; `w_ab` is the overlap foreground size, normalized by
+    its median so `lam` is scale-free; A/B are the GROUPS tiles a/b belong to.
+    `group_of=None` gives one gain per tile; a setup->camera map gives one per CAMERA.
+    Either way the return maps every setup to its gain.
 
-    The regularization pulls log-gains toward 0 -- it fixes the otherwise-free
-    global gauge (overlaps constrain only differences), damps groups with
-    few/noisy constraints, and pins a group with no constraints to exactly 1.0.
-    In the lam -> 0 limit it is a pure gauge anchor (the minimum-norm, sum-zero
-    solution): per-camera it is safe to take lam tiny (each camera has many
-    constraints, so the data dominates -- lam 1e-6 and a hard gauge agree to
-    RMS 0); per-tile keep lam >~ 0.01 to damp the smooth drift null-mode. Solved
-    as one sparse system via `scipy.sparse.linalg.lsqr`."""
+    The regularization pulls log-gains toward 0. It fixes the otherwise-free global gauge
+    (overlaps constrain only differences), damps groups with few or noisy constraints, and
+    pins an unconstrained group to exactly 1.0. As lam -> 0 it is a pure gauge anchor --
+    the minimum-norm sum-zero solution -- so per camera lam can be tiny (many constraints,
+    so the data dominates: lam 1e-6 and a hard gauge agree to RMS 0). Per tile keep lam >~
+    0.01 to damp the smooth drift null-mode.
+    """
     if group_of is None:
         group_of = {s: s for s in setups}
     groups = sorted({group_of[s] for s in setups})
@@ -442,29 +428,16 @@ def _solve_tile_gains(constraints, setups, lam=0.1, group_of=None):
 
 
 def cmd_aggregate(cfg):
-    """Reduce step: solve a per-tile gain from all tile overlaps, then write the
-    global target (see the module docstring's `aggregate` section for the why).
+    """The whole reduce step; the module docstring lists its five stages.
 
-    1. Discover every physically-overlapping tile pair from the SpimData2
-       `dataset.xml` (`_all_overlap_pairs` -- within-camera and cross-camera).
-    2. For each pair, a robust log-gain constraint from the two tiles' own
-       foreground medians in the shared region (`_pair_gain_constraint`;
-       registration-tolerant, using each tile's Otsu threshold from `stats`).
-       Run across a thread pool -- the tensorstore reads release the GIL, so
-       this uses the cores the bsub job requests.
-    3. Solve a gain g_s by regularized global least squares (`_solve_tile_gains`),
-       grouped per `gain_grouping`: "camera" (default) shares one gain across a
-       camera's tiles (robust, corrects the sensor-level step), "tile" solves one
-       per tile. `gain_estimator` ("intersection" default) and `gain_lambda`
-       (tiny for camera, ~0.1 for tile) tune the constraint and regularization.
-    4. Encode g_s for the (unchanged) `apply` stage: with global equalized
-       centre/spread M, S (median over usable tiles of own_mean/g, own_std/g)
-       and target_mean=M, target_std=S, storing corrected_mean=g_s*M,
-       corrected_std=g_s*S makes apply's `(raw-mean_i)*(target_std/std_i)+
-       target_mean` compute exactly `raw/g_s` -- pure per-tile gain, texture
-       preserved. Writes {results_root}/intensity_target.json (every tile's
-       stats + corrected_mean/std, so apply reads one file) and
-       {results_root}/tile_gains.json (per-tile gains + per-camera summary).
+    Two things not stated there. The pair constraints run across a thread pool -- the
+    tensorstore reads release the GIL, so this uses the cores the bsub job asked for.
+
+    And how `g_s` reaches the unchanged `apply` stage: with equalized centre/spread M, S
+    (median over usable tiles of own_mean/g, own_std/g) and target_mean=M, target_std=S,
+    storing corrected_mean=g_s*M and corrected_std=g_s*S makes apply's
+    `(raw-mean_i)*(target_std/std_i)+target_mean` compute exactly `raw/g_s` -- a pure
+    per-tile gain, texture preserved.
     """
     setups_all = tile_list(cfg)
     _, order = _input_location(cfg, setups_all[0], cfg["stats_scale"])

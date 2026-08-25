@@ -2,40 +2,39 @@
 
     output_format = "tiff"
 
-Every other output format in this package is a tensorstore driver, dispatched through
-`formats._SPEC`. TensorStore has no TIFF WRITER, so this is a separate path rather than
-another row in that table -- and it has to be, because TIFF differs from the zarr formats
-in the one way that matters to `correct.py`:
+Every other output format here is a tensorstore driver dispatched through `formats._SPEC`.
+TensorStore has no TIFF WRITER, so this is a separate path -- and it has to be, because
+TIFF differs from the zarr formats in the one way that matters to `correct.py`:
 
   A zarr store is a directory of independent chunk files, so shards can be written in ANY
   order and in parallel. A TIFF is ONE file whose IFDs are laid out in sequence, so the
   planes must be produced in z order, by a single writer.
 
-So the correction's shard-parallel write loop cannot be reused. What is reused is the
-read and the kernel: this streams z-slabs, corrects each with the same `ShardCorrection`,
-and hands the planes to `tifffile` in order.
+So the correction's shard-parallel write loop cannot be reused. What is reused is the read
+and the kernel: this streams z-slabs, corrects each with the same `ShardCorrection`, and
+hands the planes to `tifffile` in order.
 
 STREAMING IS NOT OPTIONAL. A level-0 tile is 4.89 GiB on the worm and 9.50 GiB on RID19
-s7, against an LSF slot of ~15 GiB -- so `imwrite(whole_array)` would not fit even once,
-let alone beside the reads. `TiffWriter.write()` accepts an iterator and consumes it lazily,
-which keeps live memory at one z-slab (plus one being prefetched) regardless of tile size.
-Those sizes also force `bigtiff=True`: classic TIFF caps at 4 GiB of offsets.
+s7, against an LSF slot of ~15 GiB, so `imwrite(whole_array)` would not fit even once, let
+alone beside the reads. `TiffWriter.write()` takes an iterator and consumes it lazily,
+holding one z-slab plus one being prefetched whatever the tile size. Those sizes also
+force `bigtiff=True`: classic TIFF caps at 4 GiB of offsets.
 
-WHY tifffile AND NOT pylibtiff. pylibtiff was tried and rejected on evidence, not taste:
-0.6.1 against libtiff 4.6.0 on arm64 macOS writes CORRUPT FILES WITHOUT RAISING -- an 8x8
-uint16 test image came back with compression tag 43856, an invalid PHOTOMETRIC, dimensions
-of 81505104, and zero-length pixel data, while `write_image` reported success. The cause is
-its ctypes varargs marshalling of `TIFFSetField`: Apple's arm64 ABI passes variadic
-arguments differently from x86-64, so the tag values arrive as garbage. It may well work on
-linux-64, where the ABI matches its assumption -- but this package targets both platforms,
-and silent corruption discovered after writing 171 GiB is the worst failure mode available.
+WHY tifffile AND NOT pylibtiff. Rejected on evidence, not taste: 0.6.1 against libtiff
+4.6.0 on arm64 macOS writes CORRUPT FILES WITHOUT RAISING -- an 8x8 uint16 test image came
+back with compression tag 43856, an invalid PHOTOMETRIC, dimensions of 81505104 and
+zero-length pixel data, while `write_image` reported success. The cause is its ctypes
+varargs marshalling of `TIFFSetField`: Apple's arm64 ABI passes variadic arguments
+differently from x86-64, so the tag values arrive as garbage. It may well work on
+linux-64, where the ABI matches its assumption, but this package targets both -- and
+silent corruption discovered after writing 171 GiB is the worst failure mode available.
 libtiff itself is fine and does carry COMPRESSION_ZSTD; the wrapper is the problem.
 
 VOXEL SIZE COMES FROM dataset.xml, NOT FROM THE ZARR. The input OME-NGFF here declares
-`scale: [1,1,1,1,1]` -- unit voxel size, a placeholder -- while the real 0.05345 um sits in
-the SpimData2 `<ViewSetup><voxelSize>`. Writing the NGFF value would produce a TIFF that
-loads at 1 um/px and mis-scales anything measured from it. Note the XML lists voxel size
-as X Y Z, matching its `<size>`, while OME-TIFF metadata is named per axis.
+`scale: [1,1,1,1,1]` -- a placeholder -- while the real 0.05345 um sits in the SpimData2
+`<ViewSetup><voxelSize>`. Writing the NGFF value would produce a TIFF that loads at 1
+um/px and mis-scales anything measured from it. Note the XML lists voxel size as X Y Z,
+matching its `<size>`, while OME-TIFF metadata is named per axis.
 """
 
 import xml.etree.ElementTree as ET
@@ -70,7 +69,7 @@ def voxel_size_um(cfg, setup):
     """(z, y, x) voxel size in micrometres from dataset.xml, or None if unavailable.
 
     None rather than a 1.0 default: a TIFF that silently claims 1 um/px is worse than one
-    that carries no calibration at all, because the first is believed.
+    carrying no calibration at all, because the first is believed.
     """
     path = cfg.get("dataset_xml")
     if not path or not Path(path).is_file():
@@ -93,7 +92,8 @@ def voxel_size_um(cfg, setup):
 
 def _ome_metadata(voxel):
     """OME-XML fields tifffile understands. Axes first -- that is what makes a stack of
-    IFDs a z stack rather than a time series."""
+    IFDs a z stack rather than a time series.
+    """
     meta = {"axes": "ZYX"}
     if voxel is not None:
         vz, vy, vx = voxel
@@ -113,12 +113,12 @@ def write_tile_ome_tiff(path, read_slab, shape, dtype, voxel=None,
                         progress=None):
     """Stream one corrected tile to a BigTIFF OME-TIFF.
 
-    `read_slab(z0, z1)` returns the corrected (z1-z0, Y, X) block; it is called from a
-    worker thread so its read overlaps the previous slab's compression and write.
+    `read_slab(z0, z1)` returns the corrected (z1-z0, Y, X) block. It is called from a
+    worker thread, so its read overlaps the previous slab's compression and write.
 
-    One slab is prefetched, not many: the writer is strictly sequential, so a deeper
-    queue would only buy memory-shaped latency hiding that a single slab ahead already
-    provides -- while multiplying the largest buffer in the stage.
+    One slab is prefetched, not many: the writer is strictly sequential, so a deeper queue
+    would only buy latency hiding that one slab ahead already provides -- while
+    multiplying the largest buffer in the stage.
     """
     Z, Y, X = shape
     path = Path(path)

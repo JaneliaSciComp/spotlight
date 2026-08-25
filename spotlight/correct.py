@@ -1,8 +1,8 @@
 """The one correction stage: flat/dark, per-tile intensity, or both.
 
-There used to be two implementations of this — a BaSiC-only one here and the intensity
-pipeline's `apply` — which differed in their blocking strategy, their memory profile and
-their output layout while computing overlapping arithmetic. This is the merged one.
+There used to be two implementations — a BaSiC-only one here and the intensity pipeline's
+`apply` — differing in blocking strategy, memory profile and output layout while computing
+overlapping arithmetic. This is the merged one.
 
 Three modes, all through the same shard loop and the same kernel:
 
@@ -12,7 +12,7 @@ Three modes, all through the same shard loop and the same kernel:
                 `input_intensity_path` and writing `output_intensity_path`. Needs the
                 `aggregate` stage's target file.
 * `both`      — both at once, so the data is read once, written once, and rounded to
-                uint16 ONCE rather than twice through an intermediate store. This is the
+                uint16 ONCE rather than twice through an intermediate store. That is the
                 reason to prefer it: the two-pass route quantizes the flat-field-corrected
                 data before the intensity rescale ever sees it. Requires
                 `input_intensity_path == input_basic_path` (the RAW store).
@@ -20,21 +20,19 @@ Three modes, all through the same shard loop and the same kernel:
 `auto` picks `both` when the BaSiC fields and the intensity target are both present,
 otherwise whichever one is.
 
-With `apply_basic` on, `int-stats` and `int-aggregate` correct the voxels THEY read too,
-not just this stage. They have to: the Otsu split, the per-tile foreground mean/std and
-the overlap medians the gain is solved from must all describe the same values this stage
-will write. Flat-field vignetting varies across a tile's field of view, so gains solved on
-raw voxels would partly chase vignetting instead of sensor gain. For the downsampled
-levels those stages read, the fields are mean-downsampled by the same per-axis factor --
-the fields vary slowly in-plane, so downsample-then-divide and divide-then-downsample
-agree well within the noise. The stats and target files record which mode produced them,
-and both refuse to mix modes rather than silently combining raw-derived statistics with
-basic-corrected voxels.
+With `apply_basic` on, `int-stats` and `int-aggregate` correct the voxels THEY read too.
+They have to: the split, the per-tile foreground mean/std and the overlap medians the gain
+is solved from must all describe the same values this stage will write. Flat-field
+vignetting varies across a tile's field of view, so gains solved on raw voxels would
+partly chase vignetting instead of sensor gain. For the downsampled levels those stages
+read, the fields are mean-downsampled by the same per-axis factor -- the fields vary
+slowly in-plane, so downsample-then-divide and divide-then-downsample agree well within
+the noise. The stats and target files record which mode produced them, and both refuse to
+mix rather than silently combining raw-derived statistics with basic-corrected voxels.
 
-The heavy lifting is `ShardCorrection` / `_correct_shard`, which
-compose all three corrections into one pass over each shard and are tuned against real
-shard geometry — see the commentary above `_BLOCK_VOXELS` there for why the CPU blocks
-are ~1 MiB contiguous row-spans rather than chunks or whole planes.
+The heavy lifting is `ShardCorrection` / `_correct_shard`, which compose all three
+corrections into one pass over each shard and are tuned against real shard geometry -- see
+the commentary above `_BLOCK_VOXELS` there.
 """
 
 import asyncio
@@ -131,7 +129,7 @@ def _view(cfg, mode):
     """The config with the I/O paths this mode reads and writes.
 
     `basic` works on the BaSiC pair; `intensity` and `both` on the intensity pair. In
-    `both` those must be the same input store — the raw data — or the flat/dark
+    `both` those must be the same input store -- the raw data -- or the flat/dark
     correction gets applied twice.
     """
     if mode == "basic":
@@ -153,10 +151,10 @@ def _intensity_params(cfg, setup):
 
     Lifted from the intensity pipeline's apply stage unchanged, including the reason the
     formula reduces to a pure per-tile gain: `corrected_mean`/`corrected_std` encode this
-    tile's gain `g` (the aggregate stage writes `corrected_mean = g*M`,
-    `corrected_std = g*S`), so the rescale is `out = raw/g`. Texture survives — it is one
-    gain per tile, not a re-center to a common mean — and only the sensor gain the
-    overlap solve isolated from content is removed.
+    tile's gain `g` (the aggregate stage writes `corrected_mean = g*M`, `corrected_std =
+    g*S`), so the rescale is `out = raw/g`. Texture survives -- it is one gain per tile,
+    not a re-center to a common mean -- and only the sensor gain the overlap solve
+    isolated from content is removed.
     """
     tp = target_path(cfg)
     combined = json.loads(tp.read_text())
@@ -191,7 +189,7 @@ def _intensity_params(cfg, setup):
 def _concurrency(cfg, n_shards, shard_bytes):
     """How many shards may be in flight, sized from a memory budget.
 
-    A plain count is the wrong knob when one shard can be 1.36 GiB — a shard spanning the
+    A plain count is the wrong knob when one shard can be 1.36 GiB: a shard spanning the
     whole plane costs three orders of magnitude more than a 64^3 chunk at the same limit.
     Each in flight holds its shard plus the transaction buffering the write.
     """

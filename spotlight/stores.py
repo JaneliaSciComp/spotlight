@@ -1,10 +1,10 @@
 """Store access for the BaSiC side of the pipeline.
 
-Thin adapters over `intensity`'s format helpers, pointed at `input_basic_path` /
-`output_basic_path` via `config.basic_view`. There is deliberately no second format
-abstraction here: `formats._SPEC` already covers n5, zarr2, zarr3 (sharded and
-unsharded), and the two non-standard zarr3 axis orders, and it resolves the on-disk
-layout from OME-NGFF metadata rather than assuming a directory convention.
+Thin adapters over the format helpers, pointed at `input_basic_path` / `output_basic_path`
+via `config.basic_view`. There is deliberately no second format abstraction here:
+`formats._SPEC` already covers n5, zarr2, zarr3 (sharded and unsharded) and the two
+non-standard zarr3 axis orders, and it resolves the on-disk layout from OME-NGFF metadata
+rather than assuming a directory convention.
 """
 
 import json
@@ -29,23 +29,7 @@ __all__ = [
 
 
 def context(cfg=None):
-    """One shared `ts.Context` for every array this process opens.
-
-    It must be a Context OBJECT passed as the `context=` argument, not a context dict
-    embedded in each spec. A dict is a context *spec*: every `ts.open` builds its own
-    Context from it, and therefore its own cache pool. The stats pass opens one array per
-    setup plus 23 statistic arrays, so with an embedded dict a `cache_pool` of 512 MiB
-    becomes 512 MiB EACH -- measured 11.4 GiB peak RSS on an 18-setup camera, against
-    well under 1 GiB once shared.
-
-    Sharing also makes the pool do its job: on a sharded store every X/Y chunk in a job
-    lands in the same shard, so one pool across all of them keeps the shard index and
-    neighbouring inner chunks resident instead of re-reading them per chunk.
-
-    One definition for the whole package -- memoised here, so this
-    and every stage in that module hand `ts.open` the same object. Size the pool with
-    SPOTLIGHT_CACHE_BYTES.
-    """
+    """The shared `ts.Context`; see `_context`. `cfg` is accepted and unused."""
     return _context()
 
 
@@ -64,15 +48,13 @@ MEMORY_FRACTION = float(os.getenv("SPOTLIGHT_MEMORY_FRACTION", "0.5"))
 def memory_budget():
     """Bytes this job may hold in flight, derived from what LSF actually gave it.
 
-    Preference order: an explicit override, the cgroup limit LSF enforces, then
-    cores x GB_PER_SLOT. Falls back to 4 GiB off-cluster.
+    In order: an explicit override, the cgroup limit LSF enforces, cores x GB_PER_SLOT,
+    then half the machine off-cluster.
 
-    Note what this is NOT: a core count. Concurrency here is bounded by MEMORY, because
-    the reads are latency-bound rather than CPU-bound -- sizing in-flight reads to the
-    core count starves the I/O and, when the limit falls below the number of units,
-    stalls on head-of-line blocking as well. Measured on an 18-setup camera at 8 cores:
-    concurrency 8 took 61 s, concurrency 18 took 26 s, at 1.4 GiB peak either way. The
-    thread pool that runs the numpy IS sized by cores -- that part is CPU-bound.
+    Deliberately not a core count. The reads are latency-bound, so sizing them to cores
+    starves the I/O -- and below the number of units it stalls on head-of-line blocking
+    too. Measured on an 18-setup camera at 8 cores: concurrency 8 took 61 s, 18 took 26 s,
+    1.4 GiB peak either way. The thread pool running the numpy IS sized by cores.
     """
     env = os.getenv("SPOTLIGHT_MEMORY_BYTES")
     if env:
@@ -92,16 +74,15 @@ def memory_budget():
 def _machine_memory():
     """Total RAM of this machine, for runs outside LSF.
 
-    Off-cluster there is no allocation to derive from, so use what the box has. A flat
-    default would be wrong in both directions -- far too small on a 128 GiB workstation,
-    far too large on a laptop -- and getting it too large is the one that hurts, since
-    the process is then competing with everything else the user is running.
+    With no allocation to derive from, use what the box has: a flat default is far too
+    small on a workstation and far too large on a laptop, and too large is the one that
+    hurts -- the process then competes with everything else the user is running.
 
-    `os.sysconf` covers Linux and macOS with no dependency. It does not exist on Windows,
-    and the 8 GiB fallback is not harmless there: it is the ONLY branch a local Windows run
-    can reach, so every `_concurrency` bound on a 128 GiB workstation would be sized against
-    4 GiB. `GetPhysicallyInstalledSystemMemory` is the stdlib-only answer (ctypes, no psutil)
-    -- it reads SMBIOS, so it can fail under a VM, which is what the fallback is still for.
+    `os.sysconf` covers Linux and macOS with no dependency but does not exist on Windows,
+    where the 8 GiB fallback would be the ONLY reachable branch, sizing every
+    `_concurrency` bound on a 128 GiB workstation against 4 GiB. `kernel32` is the
+    stdlib-only answer (ctypes, no psutil); it reads SMBIOS, so it can fail under a VM,
+    which is what the fallback is still for.
     """
     try:
         return os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
@@ -136,9 +117,8 @@ def open_source(cfg, setup, scale=0, ctx=None):
 def source_size_xyz(cfg, setup=None, scale=0):
     """(X, Y, Z) of one setup at `scale`, matching Julia's `get_source_size`.
 
-    Reads the array metadata rather than opening the array: the stats pass calls this
-    once per setup, and on a 1600-tile mosaic opening each one just to learn its shape is
-    1600 array opens for three integers.
+    Reads the array metadata rather than opening the array: the stats pass calls this once
+    per setup, and on a 1600-tile mosaic that is 1600 array opens for three integers.
     """
     bcfg = _config.basic_view(cfg)
     if setup is None:
@@ -156,9 +136,9 @@ def camera_source_size_xyz(cfg, setups, scale=0):
     """Element-wise minimum (X, Y, Z) over every setup a camera reads.
 
     Tiles in one dataset are not guaranteed to share a shape -- a later acquisition block
-    can be shallower in Z than setup 0 -- so anything that slices ALL of a camera's
-    setups with the same bounds has to be sized off the smallest, not off the reference
-    setup. Reading past a shorter tile's end makes tensorstore throw OUT_OF_RANGE.
+    can be shallower in Z than setup 0 -- so anything slicing ALL of a camera's setups
+    with the same bounds has to be sized off the smallest. Reading past a shorter tile's
+    end makes tensorstore throw OUT_OF_RANGE.
     """
     sizes = [source_size_xyz(cfg, setup=s, scale=scale) for s in setups]
     smallest = [min(v) for v in zip(*sizes)]
@@ -173,8 +153,8 @@ def xy_chunks(size_xy, tile_xy):
     """The X/Y tiling of a frame, as (x_slice, y_slice) pairs.
 
     A flat list in the same order Julia's `get_pychunks` produces (column-major over the
-    chunk grid, X fastest), because the LSF array's chunk indices address it positionally
-    -- job N owns `chunks[start:stop]`, and a different ordering silently gives job N
+    chunk grid, X fastest), because the LSF array's chunk indices address it positionally:
+    job N owns `chunks[start:stop]`, and a different ordering silently hands job N
     somebody else's part of the frame.
     """
     nx = -(-size_xy[0] // tile_xy[0])
@@ -190,7 +170,7 @@ def xy_chunks(size_xy, tile_xy):
 def stats_array_path(cfg, camera, stat, scale=0):
     """Where one per-camera statistic array lives, for callers that need the path itself.
 
-    One definition, so a caller inspecting the array on disk cannot drift from the one
+    One definition, so a caller inspecting the array on disk cannot drift from the path
     `open_stats_array` hands tensorstore.
     """
     return Path(cfg["results_root"]) / f"camera{camera + 1}" / stat / f"s{scale}"
@@ -199,14 +179,14 @@ def stats_array_path(cfg, camera, stat, scale=0):
 def open_stats_array(cfg, camera, stat, xy_size, scale=0, ctx=None, rebuild=False):
     """Create/open one per-camera statistic array: `{results_root}/camera{N}/{stat}/s{scale}`.
 
-    Always n5 and always (X, Y), whatever the input format is -- these are this package's
-    own intermediates, and `save_qstack` transposes on read for the zarr formats. Camera
-    is 1-based on disk, matching what the Julia package wrote.
+    Always n5 and always (X, Y) whatever the input format -- these are the package's own
+    intermediates, and `save_qstack` transposes on read for the zarr formats. Camera is
+    1-based on disk, matching what the Julia package wrote.
 
-    `rebuild` throws the array away and makes a fresh one, for metadata that cannot be
-    opened at all (see `create_quartile_histograms`). tensorstore rejects `delete_existing`
-    together with `open`, which is why it is a separate mode rather than an extra flag --
-    and why it must stay opt-in: it discards every chunk already written.
+    `rebuild` discards the array and makes a fresh one, for metadata that cannot be opened
+    at all (see `create_quartile_histograms`). It is a separate mode rather than a flag
+    because tensorstore rejects `delete_existing` together with `open` -- and it must stay
+    opt-in, since it throws away every chunk already written.
     """
     spec = {
         "driver": "n5",
@@ -230,10 +210,10 @@ def open_stats_array(cfg, camera, stat, xy_size, scale=0, ctx=None, rebuild=Fals
 def open_target(cfg, setup, size_xyz, ctx=None):
     """Create/open the corrected output array for one setup, as a canonical (Z, Y, X) view.
 
-    Mirrors Julia's four `load_target` methods, but routed through
-    `_output_metadata` so the two pipelines cannot drift on codec or chunk
-    layout. `size_xyz` is this setup's own size -- tiles differ in shape, and a target
-    sized off the reference setup leaves a shorter tile's tail never written.
+    Mirrors Julia's four `load_target` methods but routes through `_output_metadata`, so
+    the two pipelines cannot drift on codec or chunk layout. `size_xyz` is this setup's
+    own size: tiles differ in shape, and a target sized off the reference setup leaves a
+    shorter tile's tail never written.
     """
     bcfg = _config.basic_view(cfg)
     fmt = bcfg["output_format"]
@@ -270,13 +250,12 @@ def open_target(cfg, setup, size_xyz, ctx=None):
 def slots(default=8):
     """Cores LSF reserved for this job: what every thread pool here is sized against.
 
-    One definition, because the pools only add up to something meaningful if they are all
-    measured against the same number.
+    One definition, because the pools only add up if they measure against the same number.
 
-    `default` applies only OFF the cluster and should come from `config.stage_cores` -- the
-    `bsub -n` the stage would have been submitted with. It is clamped to the machine there,
-    and only there: with no reservation to honour the box is the constraint. LSF's own number
-    is never clamped -- a 30-slot job on a 128-core host means 30.
+    `default` applies only OFF the cluster and should come from `config.stage_cores` --
+    the `bsub -n` the stage would have been submitted with. It is clamped to the machine
+    there and only there: with no reservation to honour, the box is the constraint. LSF's
+    own number is never clamped -- a 30-slot job on a 128-core host means 30.
     """
     reserved = os.getenv("LSB_DJOB_NUMPROC")
     if reserved:
@@ -287,21 +266,20 @@ def slots(default=8):
 def _locking_mode():
     """`file_io_locking` mode: tensorstore's default everywhere except a macOS mount.
 
-    tensorstore's default (`os`) takes an OS-level lock per file. An SMB share does not
-    honour it, and the write then fails on CLOSE with a bare EIO -- "Failed to close file
-    descriptor: Input/output error", `file_descriptor.cc:66`, no mention of locking. It is
-    not flaky hardware and not a concurrency limit: measured on `//prfs.hhmi.org/tavakolilab`
-    over smbfs, writing a 1920x1920 n5 array 3/3 failed on the default and 3/3 succeeded
-    with `lockfile`, which takes the same lock through a sidecar file instead. `file_io_sync`
-    stays on, so durability is unchanged; only the lock mechanism moves. Full matrix and the
-    syscall probes that came up empty: CLAUDE.md.
+    The default (`os`) takes an OS-level lock per file. An SMB share does not honour it,
+    and the write then fails on CLOSE with a bare EIO -- "Failed to close file descriptor:
+    Input/output error", `file_descriptor.cc:66`, no mention of locking. Not flaky
+    hardware and not a concurrency limit: on `//prfs.hhmi.org/tavakolilab` over smbfs, a
+    1920x1920 n5 array failed 3/3 on the default and succeeded 3/3 with `lockfile`, which
+    takes the same lock through a sidecar file. `file_io_sync` stays on, so durability is
+    unchanged. Full matrix and the dead-end probes: CLAUDE.md.
 
-    Deliberately NOT applied on Linux: the cluster writes to `/nrs` and works, and `os`
-    locking is what it has been measured with. The `cwd` test is the cheap proxy for "this
-    run's data is on a mount" -- every stage runs from the experiment directory (see
-    `_load_toml_config`), so on this layout that is where the output lives too. Getting the
-    proxy wrong costs a local run a lock file per key and nothing else; set
-    SPOTLIGHT_IO_LOCKING to `os` / `lockfile` / `none` / `non_atomic` to decide explicitly.
+    Deliberately NOT applied on Linux, where `/nrs` works and `os` is what has been
+    measured. The `cwd` test is the cheap proxy for "this run's data is on a mount" --
+    every stage runs from the experiment directory (see `_load_toml_config`), so that is
+    where the output lives too. Getting the proxy wrong costs one lock file per key; set
+    SPOTLIGHT_IO_LOCKING to `os` / `lockfile` / `none` / `non_atomic` to decide explicitly
+    instead.
     """
     mode = os.getenv("SPOTLIGHT_IO_LOCKING")
     if mode:
@@ -334,18 +312,23 @@ _SHARED_CONTEXT = None
 
 
 def _context():
-    """The ONE `ts.Context` this process uses, built once.
+    """The ONE `ts.Context` this process uses, built once. Size it with the SPOTLIGHT_*
+    variables in `_context_spec`.
 
-    It must be a Context object shared by every `ts.open`, not a spec dict embedded in
+    It must be a Context object shared by every `ts.open`, never a spec dict embedded in
     each one. A dict is a context SPEC: tensorstore builds a fresh Context from it per
-    open, and therefore a fresh `cache_pool` and a fresh set of concurrency limits. The
-    limits are the subtler half -- `file_io_concurrency` is meant to CAP in-flight opens,
-    and a per-array copy of it caps nothing.
+    open, and so a fresh `cache_pool` and a fresh set of concurrency limits. The limits
+    are the subtler half -- `file_io_concurrency` is meant to CAP in-flight opens, and a
+    per-array copy of it caps nothing.
 
     Measured: 18 arrays opened with a spec dict held 0.68 GiB against 0.11 GiB shared, and
     the stats pass (18 setups + 23 statistic arrays) peaked at 11.4 GiB before this.
-    `_read_tile` is the other place it bit -- it is `pool.map`ped over every setup, so a
+    `_read_tile` is the other place it bit -- `pool.map`ped over every setup, so a
     1600-tile mosaic built 1600 pools.
+
+    Sharing also makes the pool do its job: on a sharded store every X/Y chunk in a job
+    lands in the same shard, so one pool keeps the shard index and neighbouring inner
+    chunks resident instead of re-reading them per chunk.
     """
     global _SHARED_CONTEXT
     if _SHARED_CONTEXT is None:
@@ -354,8 +337,9 @@ def _context():
 
 
 def _atomic_write_json(path, obj):
-    """Write JSON atomically (temp + os.replace) so concurrent array jobs writing
-    the shared top-level group file can't corrupt it."""
+    """Write JSON atomically (temp + os.replace), so concurrent array jobs cannot corrupt
+    the shared top-level group file.
+    """
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_name(p.name + f".tmp{os.getpid()}")
@@ -367,14 +351,14 @@ def _atomic_write_json(path, obj):
 def write_group_metadata(cfg, setup, factors):
     """Write multiscale group metadata for the output dataset/setup.
 
-    zarr3 / zarr3_unsharded / zarr3_zyx -> OME-NGFF 0.5 (multiscales under
-    attributes.ome in the group zarr.json); zarr2 -> OME-NGFF 0.4 (multiscales in
-    .zattrs); n5 -> n5 `downsamplingFactors` group attributes. `factors` is the
-    per-level list of cumulative (fz, fy, fx) downsample factors (level 0 ==
-    (1, 1, 1)). zarr3_zyx writes 3-D (z,y,x) axes/scale/translation arrays - the
-    standard NGFF spatial order - instead of the 5-D (t,c,z,y,x) the other zarr
-    formats use, so downstream readers that assume that standard order (rather
-    than reading axes by name) work without any changes.
+    `factors` is the per-level list of cumulative (fz, fy, fx) downsample factors, level 0
+    == (1, 1, 1). Per format: zarr3 / zarr3_unsharded / zarr3_zyx -> OME-NGFF 0.5
+    (multiscales under attributes.ome in the group zarr.json); zarr2 -> OME-NGFF 0.4
+    (multiscales in .zattrs); n5 -> `downsamplingFactors` group attributes.
+
+    zarr3_zyx writes 3-D (z,y,x) axes/scale/translation arrays -- the standard NGFF
+    spatial order -- rather than the 5-D (t,c,z,y,x) the other zarr formats use, so
+    readers that assume that order instead of reading axes by name need no changes.
     """
     fmt = cfg["output_format"]
     order = _SPEC[fmt]["order"]
@@ -475,14 +459,13 @@ def ensure_group_json(cfg, setup):
     """Make the output a valid group AS SOON AS the first array is created.
 
     `write_group_metadata` runs at the END of a setup's correction, once the pyramid
-    factors are known. Until then the arrays exist under a directory with no group node,
-    so anything that opens the store mid-run -- a viewer, a sanity check, a downstream
-    job started early -- sees an invalid zarr. On a long array run that window is hours.
+    factors are known. Until then the arrays sit under a directory with no group node, so
+    anything opening the store mid-run -- a viewer, a sanity check, a downstream job
+    started early -- sees an invalid zarr. On a long array run that window is hours.
 
-    This writes only the part that needs nothing: the bare group node. The multiscale
-    `attributes` still arrive at the end. Written if ABSENT, so it never clobbers the
-    fuller version, and the content is identical across concurrent array elements, so
-    two of them racing write the same bytes.
+    Writes only the part that needs nothing, the bare group node; the multiscale
+    `attributes` still arrive at the end. Written only if ABSENT, so it never clobbers the
+    fuller version, and two array elements racing write identical bytes.
     """
     fmt = cfg["output_format"]
     root = cfg["output_intensity_path"]
@@ -523,10 +506,9 @@ _SHAPE_CACHE = {}
 def source_pyramid_shapes(cfg, setup):
     """Canonical (Z, Y, X) shape of every input pyramid level present on disk.
 
-    Cached per (store, format, setup): walking the pyramid means one array open
-    per level, and both `source_pyramid_factors` and `basic_model` need it (the
-    latter once per setup per level, which would otherwise re-open the whole
-    pyramid for every shard).
+    Cached per (store, format, setup): walking the pyramid costs one array open per level,
+    and both `source_pyramid_factors` and `basic_model` need it -- the latter once per
+    setup per level, which would otherwise re-open the whole pyramid for every shard.
     """
     key = (cfg["input_intensity_path"], cfg["input_format"], setup)
     hit = _SHAPE_CACHE.get(key)
@@ -555,9 +537,9 @@ def source_pyramid_shapes(cfg, setup):
 def source_pyramid_factors(cfg, setup):
     """Cumulative (fz, fy, fx) downsample factors for each input pyramid level.
 
-    Derived generically from the on-disk level shapes (factor = round(shape0 /
-    shapeL) per axis), so it works for n5 / zarr2 / zarr3 alike. Level 0 is
-    always (1, 1, 1). Falls back to a single level if no pyramid is present.
+    Derived generically from the on-disk level shapes (factor = round(shape0 / shapeL) per
+    axis), so n5 / zarr2 / zarr3 alike. Level 0 is always (1, 1, 1). Falls back to a
+    single level if no pyramid is present.
     """
     shapes = source_pyramid_shapes(cfg, setup)
     if not shapes:

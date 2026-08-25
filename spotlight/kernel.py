@@ -5,7 +5,7 @@ One unit on purpose. `_BLOCK_VOXELS` sits under the measurements that chose it, 
 measurements describe. A tuning constant separated from the benchmark that set it is worse
 than no constant at all -- the next person re-tunes it blind.
 
-Used by `correct.py` for all three correction modes; composing flat/dark and per-tile
+Used by `correct.py` for all three correction modes. Composing flat/dark and per-tile
 intensity into one affine pass is what lets the data be read once and written once.
 """
 
@@ -54,11 +54,11 @@ _SCRATCH = threading.local()
 
 
 def _scratch(shape):
-    """Two per-thread float32 scratch buffers shaped like `shape`, reused across
-    blocks and shards -- a pool thread corrects thousands of blocks, so reusing
-    the pages beats re-faulting them every time. Kept as flat buffers and
-    reshaped so a short trailing block borrows the same allocation and still
-    gets a contiguous view."""
+    """Two per-thread float32 scratch buffers shaped like `shape`, reused across blocks
+    and shards -- a pool thread corrects thousands of blocks, so reusing the pages beats
+    re-faulting them every time. Kept flat and reshaped, so a short trailing block borrows
+    the same allocation and still gets a contiguous view.
+    """
     n = int(np.prod(shape))
     bufs = getattr(_SCRATCH, "bufs", None)
     if bufs is None or bufs[0].size < n:
@@ -68,14 +68,13 @@ def _scratch(shape):
 
 
 def _blocks(zyx):
-    """Contiguous (z_start, z_stop, y_start, y_stop) blocks of ~`_BLOCK_VOXELS`
-    covering a canonical (Z, Y, X) array; x is always taken whole, so every
-    block is a contiguous span of the underlying buffer (and the (Y, X)
-    coefficient planes slice to it contiguously too).
+    """Contiguous (z_start, z_stop, y_start, y_stop) blocks of ~`_BLOCK_VOXELS` covering a
+    canonical (Z, Y, X) array. x is always taken whole, so every block is a contiguous
+    span of the underlying buffer -- and the (Y, X) coefficient planes slice to it
+    contiguously too.
 
-    Whole Z-planes when a plane fits the budget, otherwise row-blocks of a single
-    plane -- for a 2560x4096 plane that's 64 rows at a time rather than one
-    40 MiB plane.
+    Whole Z-planes when a plane fits the budget, otherwise row-blocks of a single plane:
+    for a 2560x4096 plane that is 64 rows at a time rather than one 40 MiB plane.
     """
     Z, Y, X = zyx
     plane = max(Y * X, 1)
@@ -88,8 +87,9 @@ def _blocks(zyx):
 
 
 def _win(plane, y_range, x_range):
-    """A coefficient plane restricted to a shard's (y, x) window (scalars and
-    None pass through)."""
+    """A coefficient plane restricted to a shard's (y, x) window. Scalars and None pass
+    through.
+    """
     if plane is None or np.isscalar(plane):
         return plane
     return plane[y_range[0]:y_range[1], x_range[0]:x_range[1]]
@@ -98,28 +98,27 @@ def _win(plane, y_range, x_range):
 class ShardCorrection:
     """Everything one setup's shards need, precomputed once per apply job.
 
-    `mode` is the intensity strategy from `_classify` -- "bimodal" (rescale the
-    Otsu foreground only), "uniform" (rescale every voxel), or "none" (an empty
-    tile: no rescale, but still flat/dark-corrected when joint).
+    `mode` is the intensity strategy from `_classify`: "bimodal" (rescale the foreground
+    only), "uniform" (rescale every voxel), or "none" (an empty tile -- no rescale, but
+    still flat/dark-corrected when joint).
 
-    With a `BasicModel`, the flat/dark correction `(raw - dark) / flat` is
-    rewritten as the per-pixel affine `raw * basic_a + basic_b` with
-    `basic_a = 1/flat`, `basic_b = -dark/flat`, computed once here. For "uniform"
-    the intensity rescale folds into the SAME two planes:
+    With a `BasicModel`, the flat/dark correction `(raw - dark) / flat` is rewritten as
+    the per-pixel affine `raw * basic_a + basic_b` with `basic_a = 1/flat`, `basic_b =
+    -dark/flat`, computed once here. For "uniform" the intensity rescale folds into the
+    SAME two planes:
 
         max(raw*a + b, 0) * S + K  ==  max(raw*(a*S) + (b*S + K), K)
 
-    (valid because S > 0), so that whole branch is one multiply-add and a
-    scalar maximum. `S = scale_i`, `K = target_mean - mean_i*scale_i`.
+    (valid because S > 0), so that whole branch is one multiply-add and a scalar maximum.
+    `S = scale_i`, `K = target_mean - mean_i*scale_i`.
 
-    Folding trades exactness for speed at the last bit: `raw*(1/flat)` and
-    `(raw - dark)/flat` differ by an ULP or so, which flips a tiny fraction of
-    voxels by one gray level -- less than the intermediate-uint16 rounding the
-    joint route already removes, so it's only accepted where joint correction is
-    active. WITHOUT a basic model this class keeps the original operation order
-    (`(c - mean_i)*scale_i + target_mean`) exactly, so an intensity-only run
-    still produces bit-identical output to previous releases -- it only gains
-    `np.where` and the slab loop.
+    Folding trades exactness for speed at the last bit: `raw*(1/flat)` and `(raw -
+    dark)/flat` differ by an ULP or so, flipping a tiny fraction of voxels by one gray
+    level -- less than the intermediate-uint16 rounding the joint route already removes,
+    so it is only accepted where joint correction is active. WITHOUT a basic model this
+    class keeps the original operation order (`(c - mean_i)*scale_i + target_mean`)
+    exactly, so an intensity-only run still produces bit-identical output to previous
+    releases.
     """
 
     __slots__ = ("basic_a", "basic_b", "fg_a", "fg_b", "floor",
@@ -145,20 +144,19 @@ class ShardCorrection:
 def _correct_shard(canon, corr, y_range, x_range):
     """Apply `corr` to one shard's canonical (Z, Y, X) block, in place.
 
-    Pure numpy -- no I/O, no asyncio. Run via ThreadPoolExecutor (not a process
-    pool): numpy's C loops release the GIL for arrays this size, so threads get
-    real multi-core overlap without paying to pickle/copy a multi-hundred-MB
-    shard across a process boundary.
+    Pure numpy -- no I/O, no asyncio. Run via ThreadPoolExecutor, not a process pool:
+    numpy's C loops release the GIL for arrays this size, so threads get real multi-core
+    overlap without paying to pickle a multi-hundred-MB shard across a process boundary.
 
-    Every branch ends with the same tail -- clip to the uint16 range, round
-    half-to-even (`np.rint`, matching Julia's `round(UInt16, x)`), cast back into
-    `canon` -- so the data is quantized exactly ONCE no matter how many
-    corrections were composed on the way.
+    Every branch ends with the same tail -- clip to the uint16 range, round half-to-even
+    (`np.rint`, matching Julia's `round(UInt16, x)`), cast back into `canon` -- so the
+    data is quantized exactly ONCE no matter how many corrections were composed on the
+    way.
 
-    `canon` must be C-contiguous for `_blocks` to hand out contiguous work (which
-    `canonical_view` guarantees for every caller here); anything else is corrected
-    via a C-ordered copy rather than silently running strided, which measured ~7x
-    slower on an xyz-stored source.
+    `canon` must be C-contiguous for `_blocks` to hand out contiguous work, which
+    `canonical_view` guarantees for every caller here. Anything else is corrected via a
+    C-ordered copy rather than silently running strided, which measured ~7x slower on an
+    xyz-stored source.
     """
     if not canon.flags["C_CONTIGUOUS"]:
         tmp = np.ascontiguousarray(canon)

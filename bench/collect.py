@@ -1,10 +1,10 @@
 """Summarise a benchmark run: `python collect.py <bench_dir>`.
 
 Reports the PAIRED per-index ratio, not just an aggregate. The cluster is heterogeneous
-and the page cache is warm or cold depending on what ran before, so a mean over all
-julia jobs against a mean over all python jobs mostly measures which hosts each landed
-on. The pairing is what makes the number mean something -- and any pair that did land on
-different hosts is flagged rather than averaged in.
+and the page cache is warm or cold depending on what ran before, so a mean over all julia
+jobs against a mean over all python jobs mostly measures which hosts each landed on. The
+pairing is what makes the number mean something -- and any pair that did land on different
+hosts is flagged rather than averaged in.
 """
 
 import json

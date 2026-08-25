@@ -35,10 +35,10 @@ def test_fourier_l0_separates_smooth_from_noisy():
     structure is in the field.
 
     Deliberately a RELATIVE bound. A real vignette scores ~0.015, an order of magnitude
-    above `_FOURIER_HINGE` -- a smooth hump is not band-limited in the DCT basis, its
-    coefficients only decay as 1/u^2, and the unnormalised threshold this constant is
+    above `_FOURIER_HINGE`: a smooth hump is not band-limited in the DCT basis, its
+    coefficients decay only as 1/u^2, and the unnormalised threshold this constant is
     calibrated against is reached by that tail. So the term does not separate "smooth"
-    from "not smooth" on an absolute scale; it separates candidates from each other. That
+    from "not smooth" on an absolute scale, it separates candidates from each other. That
     is the published calibration, verified against BaSiCPy's own `fourier_L0_norm`.
     """
     smooth = _smooth_flat()

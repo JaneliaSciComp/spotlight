@@ -10,7 +10,7 @@ differently-warm page cache, and no amount of averaging fixes that; interleaving
 one array puts each pair on the same host pool in the same window, so the per-index ratio
 is meaningful on its own.
 
-Thread pools are pinned identically on both sides, including tensorstore's own context --
+Thread pools are pinned identically on both sides, tensorstore's own context included:
 both implementations drive the same tensorstore, so leaving those at their defaults would
 benchmark tensorstore's defaults rather than the port.
 """

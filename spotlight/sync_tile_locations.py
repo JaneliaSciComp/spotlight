@@ -1,25 +1,19 @@
 #!/usr/bin/env python3
-"""
-Sync tile (ViewRegistration) locations in a BigStitcher/BDV dataset.xml that
-only contains a subset of setups (identified by their "s{N}-t0.zarr" zarr
-path) to match the tile locations recorded in a "full" dataset.xml that has
-one ViewSetup/ViewRegistration per s{N}.
+"""Sync tile (ViewRegistration) locations in a BigStitcher/BDV dataset.xml that holds only
+a subset of setups, to match the locations recorded in a "full" dataset.xml with one
+ViewSetup/ViewRegistration per s{N}.
 
-Usage:
     python3 sync_tile_locations.py <main_dataset.xml> <subset_dataset.xml>
 
-The subset file is patched in place. Matching is done via the zgroup
-"path" attribute (e.g. path="s1009-t0.zarr") in the subset file's
-ImageLoader, which gives the setup id N in the main file for each local
-setup id in the subset file.
+The subset file is patched in place. Setups are matched through the zgroup `path`
+attribute in the subset file's ImageLoader (e.g. path="s1009-t0.zarr"), which gives the
+main file's setup id for each local one.
 
-Each subset ViewRegistration is expected to have a "Translation"
-ViewTransform (identity) plus a separate "calibration" ViewTransform that
-only carries the Z anisotropy scale factor (no translation). This script
-only rewrites the X/Y/Z translation entries of the "Translation" transform,
-taken from the main file's "calibration" ViewTransform affine (indices
-3, 7, 11 of the row-major 3x4 matrix). The subset file's own "calibration"
-transform (z-scale) is left untouched.
+Each subset ViewRegistration is expected to carry a "Translation" ViewTransform (identity)
+plus a separate "calibration" ViewTransform holding only the Z anisotropy scale factor, no
+translation. Only the X/Y/Z translation entries of the "Translation" transform are
+rewritten, taken from the main file's "calibration" affine (indices 3, 7, 11 of the
+row-major 3x4 matrix). The subset file's own "calibration" transform is left untouched.
 """
 import re
 import sys

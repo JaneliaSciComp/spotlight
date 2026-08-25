@@ -134,7 +134,7 @@ def test_int_apply_is_an_alias_for_correct(tmp_path, monkeypatch):
 
 def test_otsu_sample_is_capped(tmp_path, monkeypatch):
     """Pass 1 pools a subsample of every tile and holds them all at once to concatenate.
-    Uncapped, that grows with the mosaic -- the same pile-up pass 2 documents avoiding.
+    Uncapped that grows with the mosaic -- the same pile-up pass 2 documents avoiding.
     """
     import numpy as np
     from make_store import write_store
@@ -291,10 +291,9 @@ def test_old_empty_fraction_location_is_still_read(tmp_path, capsys):
 
 @pytest.mark.parametrize("fmt", ["n5", "zarr2"])
 def test_empty_fraction_is_stored_canonically_and_read_in_qstack_order(tmp_path, fmt):
-    """Canonical (Y, X) on disk whatever the format, swapped into the qstack's order on read.
-
-    The values are asymmetric and the plane non-square on purpose -- a stray transpose has
-    to change the array, not merely survive a shape check.
+    """Canonical (Y, X) on disk whatever the format, swapped into the qstack's order on
+    read. The values are asymmetric and the plane non-square on purpose: a stray transpose
+    has to change the array, not merely survive a shape check.
     """
     import numpy as np, tifffile
     from spotlight import qstack
@@ -319,9 +318,9 @@ def test_empty_fraction_is_stored_canonically_and_read_in_qstack_order(tmp_path,
 def test_basic_fields_round_trip_canonical_through_the_qstack_order(tmp_path):
     """The n5 path, where writing and reading each apply a transpose.
 
-    Only this branch swaps, and every other test runs on zarr2 where both swaps are no-ops,
-    so a regression here would otherwise pass unnoticed. Asserts the file itself is
-    canonical, not merely that two transposes cancel.
+    Only this branch swaps, and every other test runs on zarr2 where both swaps are
+    no-ops, so a regression here would otherwise pass unnoticed. Asserts the file itself
+    is canonical, not merely that two transposes cancel.
     """
     import numpy as np, tifffile
     from spotlight.basic import save_basic_field

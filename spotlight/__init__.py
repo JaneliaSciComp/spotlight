@@ -7,9 +7,9 @@ Workflow, from a dataset's own working directory (the one holding its
 2. `create_quartile_histograms()` -> `bsub_command.sh`, then submit it
 3. `save_qstack()` -> `qstacks/camera{N}.tiff` (inspect these)
 4. `run_basic()` -> `{results_root}/camera{N}/{Flat,Dark}-field.tif`
-5. either `write_correction_script()` -> `bsub_correction.sh`,
-   or -- if you also want the per-tile intensity correction --
-   `create_intensity_correction_script()` alone, which applies both in one pass.
+5. either `write_correction_script()` -> `bsub_correction.sh`, or -- if you also want the
+   per-tile intensity correction -- `create_intensity_correction_script()` alone, which
+   applies both in one pass.
 """
 
 from .config import (

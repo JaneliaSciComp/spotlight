@@ -14,9 +14,10 @@ from spotlight import config, tilestats
 
 def _vol():
     """Sparse, with THREE populations: background, mid-intensity tissue, and bright
-    structure. The middle one is the point -- it is what a too-high threshold discards
-    and a corrected one keeps, so a two-level volume would select identically at 250 and
-    at 3000 and the test would pass without testing anything."""
+    structure. The middle one is the point -- it is what a too-high threshold discards and
+    a corrected one keeps. A two-level volume would select identically at 250 and at 3000,
+    and the test would pass without testing anything.
+    """
     v = np.full((4, 64, 64), 100, dtype=np.uint16)
     v.reshape(-1)[:4000] = 800
     v.reshape(-1)[:400] = 4000
@@ -73,8 +74,9 @@ def test_a_typo_is_not_silently_treated_as_otsu():
 
 def test_the_default_is_a_mode_resolve_threshold_accepts():
     """Membership, not a literal: the default is an operator choice that moves (it was
-    "otsu", now "li"), but a default outside THRESHOLD_MODES makes every stage that reads it
-    raise, so THAT is the thing worth pinning."""
+    "otsu", now "li"), but a default outside THRESHOLD_MODES makes every stage that reads
+    it raise -- so that is the thing worth pinning.
+    """
     assert config.DEFAULTS["tile_threshold"] in tilestats.THRESHOLD_MODES
 
 
@@ -84,8 +86,8 @@ def test_the_default_is_a_mode_resolve_threshold_accepts():
 def test_the_override_changes_the_foreground_count_and_so_the_classification():
     """The consumer that matters most: a threshold set too high pushes a tile under
     MIN_FG_FRACTION, and an "empty" tile is dropped from the solve and passed through
-    UNCORRECTED. Measured on a real worm: tile 0's Otsu of 1621 gave 0.41% foreground;
-    at 250 it gave 2.01%.
+    UNCORRECTED. Measured on a real worm: tile 0's Otsu of 1621 gave 0.41% foreground; at
+    250 it gave 2.01%.
     """
     v = _vol()
     high = tilestats._compute_stats(v, thr=3000)
@@ -136,10 +138,10 @@ def _heavy_tailed():
     """Poisson background at a few counts plus a lognormal tail on 3% of voxels -- the
     shape a sparse fluorescence tile actually has (421 distinct levels, max ~21000).
 
-    `_vol()` will not do for the identity below: with only three distinct values the
-    class means are step functions of the threshold, skimage's iteration terminates on
-    its first step, and it returns the image mean. That is a property of a degenerate
-    histogram, not of Li, and asserting against it would test the wrong thing.
+    `_vol()` will not do for the identity below: with only three distinct values the class
+    means are step functions of the threshold, skimage's iteration terminates on its first
+    step, and it returns the image mean. That is a property of a degenerate histogram, not
+    of Li, so asserting against it would test the wrong thing.
     """
     rng = np.random.default_rng(0)
     n = 4 * 64 * 64
@@ -243,8 +245,9 @@ def test_threshold_mode_validates_once_for_everyone():
 def test_a_numeric_threshold_skips_the_pooled_sampling_pass(monkeypatch):
     """With a fixed number the emptiness stage can skip its first pass -- a strided read
     of EVERY tile whose only purpose is producing that number. Asserted by counting tile
-    reads, not by reading the source: pass 2 still reads each tile once, so the
-    signature of the skip is 1 read per tile instead of 2."""
+    reads rather than by reading the source: pass 2 still reads each tile once, so the
+    signature of the skip is 1 read per tile instead of 2.
+    """
     from spotlight import emptiness
 
     reads = []
@@ -268,7 +271,7 @@ def test_a_numeric_threshold_skips_the_pooled_sampling_pass(monkeypatch):
 
 
 def test_emptiness_honours_li(monkeypatch):
-    """The whole point of the change: `li` must reach the pooled split."""
+    """`li` must reach the pooled split, not just the per-tile one."""
     from spotlight import emptiness
 
     def fake_read(cfg, setup, level):

@@ -3,25 +3,24 @@
     python sweep_concurrency.py stats 0 1 64 --values 4,8,18,32,64
     python sweep_concurrency.py correct 0    --values 1,2,4,8
 
-Runs the stage once per concurrency value in a fresh subprocess, and reports wall clock,
+Runs the stage once per concurrency value in a fresh subprocess and reports wall clock,
 read throughput and peak RSS for each -- plus what `stores.memory_budget()` would have
 chosen on its own, which is the number the sweep is really auditing.
 
-Why this is a script and not a pytest: the answer depends on the filesystem, the node, and
-what else is running on it. There is no assertion to make, only a measurement to read.
-The harness itself IS tested (tests/test_sweep.py).
+Why a script and not a pytest: the answer depends on the filesystem, the node, and what
+else is running on it. There is no assertion to make, only a measurement to read. The
+harness itself IS tested (tests/test_sweep.py).
 
-Two confounds it handles explicitly, because both will otherwise invent a knee that is
-not there:
+Two confounds it handles explicitly, because both will otherwise invent a knee that is not
+there:
 
   * PAGE CACHE. The first value read from cold looks slowest whatever it is. Values are
-    run in shuffled order by default and each is repeated, so the cache advantage is
-    spread across them rather than landing on one. `--warmup` reads the data once first,
-    which measures warm-cache behaviour instead -- honest, but not what a production job
-    sees.
+    run in shuffled order by default and each is repeated, so the cache advantage spreads
+    across them rather than landing on one. `--warmup` reads the data once first, which
+    measures warm-cache behaviour instead -- honest, but not what a production job sees.
   * MEMORY. Raising concurrency raises peak RSS, and LSF kills a job that exceeds its
-    reservation. The table reports RSS beside throughput so the fastest value that still
-    fits is visible, rather than just the fastest.
+    reservation. The table reports RSS beside throughput, so the fastest value that still
+    fits is visible rather than just the fastest.
 """
 
 import argparse
@@ -81,9 +80,9 @@ def _scratch_workdir(results_root):
 
     Both implementations read their config from the current directory, so redirecting it
     needs no code change: copy the toml with `results_root` swapped and run there. The
-    emptiness measurements are copied across too -- the stats pass reads
-    `empty_threshold` from them, and without it the pass skips the background profile and
-    stops doing the same work the real one does.
+    emptiness measurements are copied across too -- the stats pass reads `empty_threshold`
+    from them, and without it the pass skips the background profile and stops doing the
+    same work the real one does.
     """
     import shutil
     import tomllib

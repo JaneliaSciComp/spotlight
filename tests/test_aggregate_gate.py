@@ -13,7 +13,8 @@ from spotlight import aggregate, config, tilestats
 
 def test_config_defaults_match_the_gate_constants():
     """`config.DEFAULTS` restates these as literals to avoid an import cycle; if
-    `tilestats` changes and this does not, the documented default becomes a lie."""
+    `tilestats` changes and this does not, the documented default becomes a lie.
+    """
     assert config.DEFAULTS["min_overlap_foreground"] == tilestats.MIN_FOREGROUND
     assert config.DEFAULTS["min_overlap_fraction"] == tilestats.MIN_FG_FRACTION
 
@@ -64,7 +65,8 @@ def _sparse(n_fg, gain=1.0, shape=(8, 32, 32)):
 
 def _full_overlap(setup, world_bbox, sizes, transforms, factor, shape):
     """Stub the geometry: these tests are about the GATE, and the world-bbox-to-pixel
-    transform has its own tests. Two tiles that overlap completely."""
+    transform has its own tests. Two tiles that overlap completely.
+    """
     return [(0, shape[0]), (0, shape[1]), (0, shape[2])]
 
 
@@ -172,8 +174,9 @@ def test_gain_floor_accepts_tile_a_method_or_a_number():
 
 def test_gain_floor_can_name_a_method_independently_of_tile_threshold():
     """The combination this exists for: `tile_threshold = 0` puts the apply stage in its
-    all-pixels `uniform` mode, while the gain solve still gates on tissue. The two
-    settings answer different questions and must not be forced to agree."""
+    all-pixels `uniform` mode while the gain solve still gates on tissue. The two settings
+    answer different questions and must not be forced to agree.
+    """
     st = {"threshold": 0.0, "thresholds": {"otsu": 1621.0, "li": 274.0}}
     assert aggregate._tile_floor(st, "tile", 0) == 0.0        # follows tile_threshold
     assert aggregate._tile_floor(st, "li", 0) == 274.0        # ...or does not
@@ -182,8 +185,9 @@ def test_gain_floor_can_name_a_method_independently_of_tile_threshold():
 
 
 def test_a_stats_file_predating_the_catalogue_says_what_to_re_run():
-    """Old stats files have `threshold` but no per-method record. Naming a method then
-    has no answer, and guessing one would silently gate at the wrong level."""
+    """Old stats files have `threshold` but no per-method record, so naming a method has
+    no answer -- and guessing one would silently gate at the wrong level.
+    """
     old = {"threshold": 1621.0}
     assert aggregate._tile_floor(old, "tile", 7) == 1621.0     # still fine
     with pytest.raises(RuntimeError, match="re-run the stats stage"):
@@ -192,7 +196,8 @@ def test_a_stats_file_predating_the_catalogue_says_what_to_re_run():
 
 def test_the_header_reports_the_floors_actually_used():
     """The bug this fixes: a run with tile_threshold="li" printed `floor=otsu`, because
-    the header echoed the SETTING rather than the values in play."""
+    the header echoed the SETTING rather than the values in play.
+    """
     cache = {0: {"thr": 274.0}, 1: {"thr": 107.0}}
     label = aggregate._floor_label("tile", cache, [0, 1])
     assert "107-274" in label and "otsu" not in label
@@ -220,9 +225,10 @@ def test_floor_sensitivity_is_reported_for_a_ratio_that_moves():
 
 
 def test_a_true_gain_is_not_flagged_unstable():
-    """The false-positive side, and the reason the check is per-voxel rather than a
-    second median above a higher floor: a common floor cuts more off the dimmer tile, so
-    a PERFECT gain of 2 reported a 43% drift under the absolute-floor version."""
+    """The false-positive side, and why the check is per-voxel rather than a second median
+    above a higher floor: a common floor cuts more off the dimmer tile, so a PERFECT gain
+    of 2 reported a 43% drift under the absolute-floor version.
+    """
     shape = (8, 64, 64)
     a = np.full(shape, 100.0, np.float32)
     a.reshape(-1)[:4000] = 600.0

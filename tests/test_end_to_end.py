@@ -138,10 +138,10 @@ def test_generated_scripts_with_explicit_setup_ids(experiment):
 def test_module_entry_point_runs(experiment):
     """`python -m spotlight` must work with nothing but the package importable.
 
-    Run from the repo root with a bare environment -- no PYTHONPATH -- so this checks the
-    same thing the generated bsub lines rely on: that `python -m spotlight` resolves
-    without any path plumbing. (cwd is on sys.path, which stands in for the editable
-    install the environment provides on the cluster.)
+    Run from the repo root with a bare environment, no PYTHONPATH, so this checks what the
+    generated bsub lines rely on: that `python -m spotlight` resolves with no path
+    plumbing. (cwd is on sys.path, standing in for the editable install the cluster
+    environment provides.)
     """
     r = subprocess.run([sys.executable, "-m", "spotlight", "--help"],
                        capture_output=True, text=True, cwd=ROOT,
@@ -154,10 +154,10 @@ def test_module_entry_point_runs(experiment):
 def test_background_quantile_partials_are_cleared_only_when_they_would_not_match(experiment):
     """Both directions, because each failure is silent in its own way.
 
-    Partials are summed blind, so one from a different tiling skews the profile rather than
-    failing. But clearing on every resubmit discarded cameras that were already finished --
-    and regenerating the script after changing an unrelated knob is the common reason to
-    come back through here, so that cost was being paid routinely.
+    Partials are summed blind, so one from a different tiling skews the profile rather
+    than failing. But clearing on every resubmit discarded cameras that were already
+    finished -- and regenerating the script after changing an unrelated knob is the common
+    reason to come back through here, so that cost was being paid routinely.
     """
     from spotlight.quantiles import background_quantile_dir
     cfg = config.load_config()

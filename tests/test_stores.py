@@ -102,12 +102,12 @@ def test_correction_round_trips_through_every_output_format(store, tmp_path):
     """Write fields, correct a setup, read it back, compare against the math done here.
 
     Within one gray level, not exact. The shared kernel folds `(raw - dark)/flat` into the
-    affine `raw*(1/flat) + (-dark/flat)` so the flat/dark and intensity corrections compose
-    into a single multiply-add per voxel. That differs from the unfolded order by an ULP,
-    which lands on the far side of a rounding boundary for a small fraction of voxels --
-    measured 0.011% here, always by exactly 1. That is far less error than the
-    intermediate uint16 rounding a two-pass correction would introduce, which is the
-    trade this buys.
+    affine `raw*(1/flat) + (-dark/flat)` so the flat/dark and intensity corrections
+    compose into a single multiply-add per voxel. That differs from the unfolded order by
+    an ULP, which lands on the far side of a rounding boundary for a small fraction of
+    voxels -- measured 0.011% here, always by exactly 1. Far less error than the
+    intermediate uint16 rounding a two-pass correction would introduce, which is the trade
+    this buys.
     """
     from spotlight import basic
 
@@ -149,8 +149,8 @@ def test_qstack_orientation(store, tmp_path):
 def test_context_is_a_shared_object_not_a_spec_dict():
     """A context DICT in a spec makes `ts.open` build its own Context, and so its own
     cache pool, per array. The stats pass opens one array per setup plus 23 statistic
-    arrays, so that turned a 512 MiB pool into 11.4 GiB of peak RSS on an 18-setup
-    camera. Sharing one Context object is the fix; this pins it.
+    arrays, so that turned a 512 MiB pool into 11.4 GiB of peak RSS on an 18-setup camera.
+    Sharing one Context object is the fix; this pins it.
     """
     import tensorstore as ts
     assert isinstance(stores.context(), ts.Context)

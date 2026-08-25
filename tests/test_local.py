@@ -119,9 +119,10 @@ def test_apply_basic_follows_the_pipeline_not_the_filesystem():
 
 
 def test_apply_basic_matches_what_the_correct_stage_will_demand():
-    """The check that fired is `_check_basic_mode(cfg, recorded, ...)` in the apply
-    stage, comparing against `correct._view`'s `apply_basic = (mode == "both")`. If these
-    two ever disagree the pipeline fails midway, after writing every earlier stage."""
+    """The check that fired is `_check_basic_mode(cfg, recorded, ...)` in the apply stage,
+    comparing against `correct._view`'s `apply_basic = (mode == "both")`. If those two
+    ever disagree the pipeline fails midway, after writing every earlier stage.
+    """
     from spotlight import correct, local
     for pipeline, mode in local._CORRECT_MODE.items():
         view = correct._view({"apply_basic": None, "input_basic_path": "",
@@ -149,9 +150,10 @@ def test_stats_arrays_are_created_up_front_and_zero_byte_metadata_is_rebuilt(exp
     """The driver must leave the workers nothing to create.
 
     An n5 array whose attributes.json is zero bytes is unopenable and unrepairable --
-    tensorstore has to read the metadata to write it -- so a create race does not just fail
-    a run, it poisons the array for every run afterwards. Both halves are checked here: the
-    arrays exist before submission, and a poisoned one is rebuilt rather than handed over.
+    tensorstore has to read the metadata to write it -- so a create race does not just
+    fail a run, it poisons the array for every run afterwards. Both halves are checked:
+    the arrays exist before submission, and a poisoned one is rebuilt rather than handed
+    over.
     """
     from spotlight import scripts
 

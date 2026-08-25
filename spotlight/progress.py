@@ -7,18 +7,17 @@
 
 The only interesting design point: these stages run BOTH interactively (`python -m
 spotlight run both`) and under `bsub`, with stdout redirected to a file. A carriage-return
-bar is right for the first and wrong for the second -- `\\r` does not erase anything in a
-file, so a 500-chunk job leaves one enormous unreadable line, and `tail -f` on it shows
-nothing until the job ends. So the output mode is chosen from `isatty()`:
+bar is right for the first and wrong for the second -- `\\r` erases nothing in a file, so a
+500-chunk job leaves one enormous unreadable line and `tail -f` shows nothing until the
+job ends. So the mode is chosen from `isatty()`:
 
   * a terminal gets a real bar, redrawn in place with `\\r`
   * anything else gets ordinary lines, emitted only when the percentage crosses a step or
-    enough seconds have passed -- so a long job produces a handful of timestamped lines
-    instead of one per chunk
+    enough seconds have passed -- a handful of timestamped lines for a long job
 
-That also fixes something the old `print(f"chunk {idx}/{stop} written")` did badly: on a
-job with thousands of chunks it was thousands of log lines, and none of them said how much
-was left or how long it would take.
+That also fixes what the old `print(f"chunk {idx}/{stop} written")` did badly: thousands
+of chunks meant thousands of log lines, none of which said how much was left or how long
+it would take.
 
 No dependency: tqdm is not in the environment, and this is thirty lines.
 """
@@ -52,7 +51,7 @@ def _duration(seconds):
 class Progress:
     """Count `total` units of work and render progress.
 
-    `advance()` is safe to call from several threads; the stages here call it from the
+    `advance()` is safe to call from several threads. The stages here call it from the
     event loop, but a lock costs nothing at one call per chunk and removes the question.
     """
 

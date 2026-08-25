@@ -3,14 +3,14 @@
 Same file as before -- `LocalPreferences.toml` in the current working directory, so an
 experiment is selected by `cd`-ing into its directory -- but the table is now
 `[spotlight]` / `[spotlight.basic]`. Reads fall back to the pre-rename
-`[BigFlatFieldIlluminator]` table, so directories written by the Julia package keep
+`[BigFlatFieldIlluminator]` table so directories written by the Julia package keep
 working; writes only ever produce `[spotlight]`.
 
 `load_config` layers the BaSiC-side keys and their defaults over `_load_toml_config`,
 which parses the shared table and validates the formats. Also owns the grouping helpers
 (`camera_groups`, `camera_of`) and the result paths (`stats_path`, `target_path`,
-`basic_field_paths`) -- the questions "which camera owns this setup" and "where do
-results live", which every stage asks and none should answer for itself.
+`basic_field_paths`) -- the questions "which camera owns this setup" and "where do results
+live", which every stage asks and none should answer for itself.
 """
 
 import os
@@ -145,12 +145,11 @@ _PATH_KEYS = ("input_basic_path", "output_basic_path", "output_stem", "error_ste
 def _slashes(path):
     """A path with forward slashes, which Windows accepts everywhere and tensorstore wants.
 
-    The kvstore paths this package hands tensorstore are built by `/`-joining a suffix onto
-    a configured root, so on Windows a root of `C:\\data\\exp` yields the mixed
+    The kvstore paths this package hands tensorstore are built by `/`-joining a suffix
+    onto a configured root, so on Windows a root of `C:\\data\\exp` yields the mixed
     `C:\\data\\exp/setup0/timepoint0/s0`. Python's own `open()` does not care; tensorstore's
-    `file` driver is the one that has to parse the key, and forward slashes are the form
-    both platforms agree on. Normalising the ROOTS is the whole fix -- everything derived
-    from them is already `/`-joined.
+    `file` driver has to parse the key. Normalising the ROOTS is the whole fix --
+    everything derived from them is already `/`-joined.
 
     Not `Path.as_posix()`: that resolves nothing here and would mangle a UNC root, whose
     leading `\\\\server\\share` must stay a double separator. A plain replace keeps it as
@@ -189,8 +188,8 @@ def stage_cores(cfg, stage):
     """The `bsub -n` this stage is submitted with, as a thread-pool size.
 
     Pass it to `stores.slots()`, which prefers LSF's actual reservation and falls back to
-    this -- so an off-cluster run gets the pool the cluster would have given it instead of
-    an unrelated literal.
+    this -- so an off-cluster run gets the pool the cluster would have given it rather
+    than an unrelated literal.
 
     Reads DEFAULTS when the key is absent rather than raising: a partial config (a test
     fixture, a hand-built dict) should size a pool, not kill the stage.
@@ -202,9 +201,8 @@ def stage_cores(cfg, stage):
 def load_config(require_intensity_io=False):
     """The merged configuration for this experiment.
 
-    Defaults to `require_intensity_io=False` -- the opposite of `_load_toml_config` --
-    because a BaSiC-only experiment has no reason to have configured the per-tile
-    intensity pipeline's I/O.
+    Defaults to `require_intensity_io=False`, the opposite of `_load_toml_config`, because
+    a BaSiC-only experiment has no reason to have configured the intensity pipeline's I/O.
     """
     cfg = _load_toml_config(require_intensity_io=require_intensity_io)
     for key, default in DEFAULTS.items():
@@ -219,10 +217,10 @@ def load_config(require_intensity_io=False):
 def basic_params(cfg=None):
     """The `[spotlight.basic]` table, with defaults filled in.
 
-    A BaSiC key written one level up -- in `[spotlight]` rather than
-    `[spotlight.basic]` -- is honoured with a warning rather than ignored. Silently
-    ignoring it is the worse failure: `override_darkfield = true` in the wrong table
-    reads back as `false`, and the run merely looks like it chose not to override.
+    A BaSiC key written one level up -- in `[spotlight]` rather than `[spotlight.basic]`
+    -- is honoured with a warning rather than ignored. Silently ignoring it is the worse
+    failure: `override_darkfield = true` in the wrong table reads back as `false`, and the
+    run merely looks like it chose not to override.
     """
     cfg = load_config() if cfg is None else cfg
     nested = dict(cfg.get("basic", {}))
@@ -249,10 +247,9 @@ def num_cameras(cfg):
 def basic_view(cfg):
     """`cfg` with the intensity pipeline's I/O keys pointed at the BaSiC paths.
 
-    Every store helper (`_input_location`, `open_output_array`,
-    `source_pyramid_shapes`, ...) reads `input_intensity_path` / `output_intensity_path`.
-    Rebinding those two keys is the whole adapter -- no second format abstraction gets
-    written on this side.
+    Every store helper (`_input_location`, `open_output_array`, `source_pyramid_shapes`,
+    ...) reads `input_intensity_path` / `output_intensity_path`. Rebinding those two keys
+    is the whole adapter; no second format abstraction gets written on this side.
     """
     return {**cfg,
             "input_intensity_path": cfg["input_basic_path"],
@@ -270,9 +267,9 @@ def _write_tables(tables):
 def set_config(**kwargs):
     """Merge `kwargs` into the `[spotlight]` table of ./LocalPreferences.toml.
 
-    A legacy `[BigFlatFieldIlluminator]` table is migrated on first write rather than
-    left beside the new one: two tables holding the same keys is the kind of state where
-    an edit lands in the one nothing reads.
+    A legacy `[BigFlatFieldIlluminator]` table is migrated on first write rather than left
+    beside the new one: two tables holding the same keys is the state where an edit lands
+    in the one nothing reads.
     """
     tables = _read_tables()
     section = tables.pop(LEGACY_TABLE, {}) | tables.get(TABLE, {})
@@ -301,21 +298,20 @@ def set_basic_config(**kwargs):
 
 
 def _load_toml_config(require_intensity_io=True):
-    """Read the [spotlight] table from LocalPreferences.toml in the
-    current working directory (so each experiment's own toml can be used just by
-    running from that experiment's directory, independent of where this script
-    itself lives on disk).
+    """Read the `[spotlight]` table from LocalPreferences.toml in the current working
+    directory, so an experiment is selected by `cd`-ing into it, wherever this package
+    sits on disk.
 
-    Falls back to the pre-rename `[BigFlatFieldIlluminator]` table so experiment
-    directories written by the Julia package keep working untouched; `set_config`
-    only ever writes `[spotlight]`.
+    Falls back to the pre-rename `[BigFlatFieldIlluminator]` table so directories written
+    by the Julia package keep working; `set_config` only ever writes `[spotlight]`.
 
     `require_intensity_io=False` tolerates a toml with no `input_intensity_path` /
     `output_intensity_path`, for stages that read neither. The `emptiness` stage is the
     case that matters: it is driven from the BaSiC side (`create_quartile_histograms`
     invokes it), and a BaSiC-only experiment has no reason to have configured the
-    per-setup intensity pipeline's I/O at all. Demanding those keys there turned a
-    working BaSiC run into a KeyError."""
+    per-setup intensity pipeline's I/O at all. Demanding those keys there turned a working
+    BaSiC run into a KeyError.
+    """
     path = config_path()
     try:
         with open(path, "rb") as f:
@@ -392,10 +388,13 @@ def tile_list(cfg):
 
 
 def camera_groups(cfg):
-    """Setups grouped by camera: setup_ids as-is if given (one group per camera,
-    e.g. `[[171,...,194], [201,...,204]]`), else contiguous `setups_per_camera`-sized
-    chunks of `0..last_setup`. Mirrors `camera_setups()` in src/BigFlatFieldIlluminator.jl
-    so the two pipelines agree on which setups belong to which camera."""
+    """Setups grouped by camera: `setup_ids` as-is if given (one group per camera, e.g.
+    `[[171,...,194], [201,...,204]]`), else contiguous `setups_per_camera`-sized chunks of
+    `0..last_setup`.
+
+    Mirrors `camera_setups()` in src/BigFlatFieldIlluminator.jl, so the two pipelines
+    agree on which setups belong to which camera.
+    """
     ids = cfg.get("setup_ids", [])
     if ids:
         return [list(group) for group in ids]
@@ -406,9 +405,12 @@ def camera_groups(cfg):
 
 
 def basic_field_paths(cfg, camera):
-    """(flat, dark) TIFF paths for a 0-based camera index. `run_basic()` writes
-    1-BASED `camera{N}` directories (Julia's `camera_setups(config)[camera]` is
-    indexed from 1), while `camera_groups` here is 0-based -- hence the +1."""
+    """(flat, dark) TIFF paths for a 0-based camera index.
+
+    `run_basic()` writes 1-BASED `camera{N}` directories (Julia's
+    `camera_setups(config)[camera]` is indexed from 1) while `camera_groups` here is
+    0-based -- hence the +1.
+    """
     d = Path(cfg["results_root"]) / f"camera{camera + 1}"
     return d / "Flat-field.tif", d / "Dark-field.tif"
 
@@ -434,7 +436,7 @@ def empty_fraction_path(cfg, camera):
     """The per-frame-pixel empty-fraction map for a 0-based camera index.
 
     Inside `camera{N}/`, beside that camera's fields and statistic arrays, rather than
-    loose in `results_root` -- everything else per-camera already lives there, and a flat
+    loose in `results_root`: everything else per-camera already lives there, and a flat
     directory of `basic_empty_fraction_camera*.tif` does not scale past a few cameras.
     """
     return Path(cfg["results_root"]) / f"camera{camera + 1}" / "empty_fraction.tif"

@@ -2,15 +2,13 @@
 
 Two deliberate choices:
 
-* The frame is never square (X=64, Y=48). A transposed read then fails on SHAPE rather
-  than passing quietly, which is the cheapest possible insurance against the single most
-  likely porting bug.
+* The frame is never square (X=64, Y=48), so a transposed read fails on SHAPE rather than
+  passing quietly -- the cheapest insurance against the likeliest porting bug.
 * Voxel values encode their own coordinates, so an axis SWAP that happens to preserve the
   shape still fails on value.
 
-The stores are written through `open_output_array` / `write_group_metadata` --
-the same writers the pipeline uses -- so the layouts under test are the real ones rather
-than a test-only approximation of them.
+The stores are written through `open_output_array` / `write_group_metadata`, the same
+writers the pipeline uses, so the layouts under test are the real ones.
 """
 
 from pathlib import Path

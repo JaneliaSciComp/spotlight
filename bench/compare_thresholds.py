@@ -5,24 +5,24 @@
     python /path/to/spotlight/bench/compare_thresholds.py 0 1 2      # just these
 
 Reads each tile once at `stats_scale` and reports what each estimator would choose, what
-fraction of the tile it would mark foreground, and -- the part that decides whether a
-tile participates in the gain solve at all -- whether it would be classified `empty`.
+fraction of the tile it would mark foreground, and -- the part that decides whether a tile
+participates in the gain solve at all -- whether it would be classified `empty`.
 
-Why this is a script and not a test: there is no right answer to assert. Which threshold
-is correct is a judgement about the specimen, and the point here is to put the numbers
-side by side so that judgement can be made on evidence.
+Why a script and not a test: there is no right answer to assert. Which threshold is
+correct is a judgement about the specimen, and the point is to put the numbers side by
+side so that judgement can be made on evidence.
 
-The column that explains everything else is `r`, the ratio of the two class means at
-Li's threshold. Li's fixed point is the LOGARITHMIC mean of the class means and
-Otsu/isodata's is the ARITHMETIC mean, so their ratio is a pure function of r:
+The column that explains everything else is `r`, the ratio of the two class means at Li's
+threshold. Li's fixed point is the LOGARITHMIC mean of the class means and Otsu/isodata's
+is the ARITHMETIC mean, so their ratio is a pure function of r:
 
     li/otsu ~ 2(r-1) / ((r+1) ln r)
 
-which is ~1 when the classes are close and falls away as they separate (0.71 at r=10,
-0.43 at r=100). That is the whole difference between the two methods: on a sparse tile
-with a long bright tail r is large and Otsu is dragged into the tail; on an almost-all-
-tissue tile r is small and the two agree. If this run shows r below ~5 everywhere, Otsu
-is not failing on this dataset and switching to Li will change little.
+which is ~1 when the classes are close and falls away as they separate (0.71 at r=10, 0.43
+at r=100). That is the whole difference between the two methods: on a sparse tile with a
+long bright tail r is large and Otsu is dragged into the tail; on an almost-all-tissue
+tile r is small and the two agree. If this run shows r below ~5 everywhere, Otsu is not
+failing on this dataset and switching to Li will change little.
 """
 
 import sys
@@ -43,7 +43,8 @@ METHODS = {"otsu": threshold_otsu, "li": threshold_li, "isodata": threshold_isod
 def _would_be_empty(n_fg, n_vox):
     """The `_classify` foreground gate, restated. A tile that fails it is called `empty`,
     dropped from the gain solve, and passed through UNCORRECTED -- so a threshold that
-    pushes a real tile under this bar is not a cosmetic problem."""
+    pushes a real tile under this bar is not a cosmetic problem.
+    """
     return n_fg < MIN_FOREGROUND or n_fg < MIN_FG_FRACTION * n_vox
 
 

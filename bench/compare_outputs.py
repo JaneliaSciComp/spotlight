@@ -4,8 +4,8 @@ Arguably the more valuable half of a benchmark run. Timing tells you the port is
 this tells you it is still right, on real data, at real scale -- and it costs one extra
 job on a run that already read everything.
 
-Exits non-zero on the first mismatch, naming the chunk, because "they differ" without a
-location is not actionable.
+Exits non-zero on the first mismatch, naming the chunk: "they differ" without a location
+is not actionable.
 """
 
 import sys

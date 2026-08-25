@@ -10,11 +10,10 @@ uninterruptible sleep at once -- that sum is what the load average is. A thread 
 an NFS read is charged exactly like one burning a core, which is why an idle-looking pool
 of 1920 file-I/O threads is not free.
 
-Read `/proc/loadavg` and you measure the whole host, including everyone else's jobs. This
-samples `/proc/<pid>/task/*/stat` instead and counts only THIS job's threads in state R or
-D: its own contribution to the load, uncontaminated by whatever else landed on the node.
-(`/proc/loadavg` is reported alongside anyway -- it is literally the number in the email,
-and on an otherwise-quiet node it corroborates.)
+Read `/proc/loadavg` and you measure the whole host, everyone else's jobs included. This
+samples `/proc/<pid>/task/*/stat` and counts only THIS job's threads in state R or D: its
+own contribution to the load, uncontaminated. (`/proc/loadavg` is reported alongside
+anyway -- it is literally the number in the email, and on a quiet node it corroborates.)
 
 Each arm is a full stage run in a fresh subprocess with a different environment, because
 every knob under test is read at process start: OpenBLAS sizes its pool when the shared
@@ -28,8 +27,8 @@ library loads, and tensorstore builds its thread pools from the first `ts.Contex
     io-16x     file_io slots*16  }
     both-full  both slots        -- one step past `shipped`; measured 2.2x, over the ceiling
 
-Run it on a QUIET node (`bsub -n <slots> -Is`), or the load column measures the neighbours.
-Linux only: /proc is the whole measurement.
+Run it on a QUIET node (`bsub -n <slots> -Is`), or the load column measures the
+neighbours. Linux only: /proc is the whole measurement.
 
 The arms run in the order given, so on a source small enough to fit the page cache the
 later ones read warm and look faster. `--shuffle` spreads that across arms instead of
@@ -81,8 +80,8 @@ def arm_env(spec, n):
     shell cannot silently leak into an arm that means to leave it at its default.
 
     `LSB_DJOB_NUMPROC` is pinned to `n` because the STAGE reads it too -- it sizes its own
-    kernel ThreadPoolExecutor from `stores.slots()`. Judging a ratio against 30 slots while
-    the child quietly builds an 8-thread pool measures neither configuration.
+    kernel ThreadPoolExecutor from `stores.slots()`. Judging a ratio against 30 slots
+    while the child quietly builds an 8-thread pool measures neither configuration.
     """
     env = {k: v for k, v in os.environ.items()
            if k not in ("SPOTLIGHT_IO_CONCURRENCY", "SPOTLIGHT_COPY_CONCURRENCY")}
@@ -96,18 +95,20 @@ def _state_char(line):
     """The state field of a `/proc/<pid>/task/<tid>/stat` line.
 
     Read after the LAST ')' because field 2 is the executable name, unescaped: it may
-    itself contain spaces and parentheses, so splitting on whitespace picks up the wrong
+    itself contain spaces and parentheses, so splitting on whitespace picks the wrong
     field for exactly the processes whose names are interesting.
     """
     return line[line.rindex(")") + 2]
 
 
 def _hwm_kib(pid):
-    """The child's own peak RSS. Read from /proc rather than `getrusage(RUSAGE_CHILDREN)`,
-    whose `ru_maxrss` is a monotonic high-water mark across every child ever waited on: the
-    first arm's peak sticks and each later arm reports a delta of 0, which reads as "this
-    arm used no memory" rather than "not measured". Must be sampled while the process is
-    alive, hence here and not after `communicate()`."""
+    """The child's own peak RSS, sampled while it is still alive.
+
+    Read from /proc rather than `getrusage(RUSAGE_CHILDREN)`, whose `ru_maxrss` is a
+    monotonic high-water mark across every child ever waited on: the first arm's peak
+    sticks and each later arm reports a delta of 0, which reads as "this arm used no
+    memory" rather than "not measured". Hence here, and not after `communicate()`.
+    """
     try:
         for line in Path(f"/proc/{pid}/status").read_text().splitlines():
             if line.startswith("VmHWM:"):

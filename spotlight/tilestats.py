@@ -1,30 +1,18 @@
 """Stage: per-tile intensity statistics, and what they say about a tile.
 
 One job per setup. Reads the tile at a downsampled level, splits background from
-foreground with Otsu, and writes `{results_root}/intensity_stats/setup{N}.json` for
-`aggregate` to reduce.
+foreground, and writes `{results_root}/intensity_stats/setup{N}.json` for `aggregate` to
+reduce.
 
-Also owns `_classify`, which turns those numbers into the three tile kinds the correction
-branches on -- "bimodal" (real background to protect), "uniform" (no clean split, correct
-every voxel), "empty" (nothing worth correcting) -- and the thresholds that decide
-between them. The thresholds live beside the classifier that reads them, with the
-measurements that set them: a tuning constant separated from its benchmark is worse than
-no constant, because the next person re-tunes it blind.
+Also owns `_classify` and the thresholds it reads. Those constants live beside the
+classifier, with the measurements that set them: a tuning constant separated from its
+benchmark is worse than no constant, because the next person re-tunes it blind.
 
-Always per-tile: each tile is thresholded on its own. `aggregate` then uses those
-per-tile thresholds to compare OVERLAPPING tiles and solve a gain -- which is what keeps
-a tile's own content out of the gain estimate.
+Always per-tile: each tile is thresholded on its own. `aggregate` then uses those per-tile
+thresholds to compare OVERLAPPING tiles and solve a gain, which is what keeps a tile's own
+content out of the gain estimate.
 
-`_classify` sorts a tile into the three strategies the correction branches on:
-
-* **bimodal** -- a clean background/foreground split. Mask the background out and rescale
-  the foreground only.
-* **uniform** -- no clean split but real signal throughout (whole-tile std above the noise
-  floor). Rescale every voxel.
-* **empty** -- no clean split and std near the noise floor: an all-noise tile. Passed
-  through unmodified, and dropped from the gain solve entirely.
-
-These thresholds are in GRAY LEVELS, and they stay valid under joint BaSiC correction
+The thresholds are in GRAY LEVELS, and they stay valid under joint BaSiC correction
 because the flat field is normalised around 1, so correcting preserves the data's overall
 scale.
 
@@ -99,9 +87,9 @@ MIN_BACKGROUND_AREA = 0.02
 def open_downsampled(cfg, setup):
     """Open a downsampled view of a setup's input array.
 
-    Uses the prebuilt pyramid level `stats_scale` if it exists on disk; otherwise
-    opens scale 0 and wraps it in TensorStore's mean-downsample driver so stats
-    stay cheap without requiring a prebuilt pyramid.
+    Uses the prebuilt pyramid level `stats_scale` if it is on disk; otherwise opens scale
+    0 and wraps it in TensorStore's mean-downsample driver, so stats stay cheap without
+    requiring a prebuilt pyramid.
     """
     fmt = cfg["input_format"]
     spec = _SPEC[fmt]
@@ -141,9 +129,9 @@ THRESHOLD_MODES = ("otsu", "li", "pooled")
 def threshold_mode(cfg):
     """`tile_threshold`, validated once: a float, or one of THRESHOLD_MODES.
 
-    Validated in one place so every stage rejects the same typos with the same message.
-    A silent fallback to "otsu" is the worst outcome, because it is indistinguishable
-    from a threshold that was already right.
+    Validated in one place so every stage rejects the same typos with the same message. A
+    silent fallback to "otsu" is the worst outcome, being indistinguishable from a
+    threshold that was already right.
     """
     mode = cfg.get("tile_threshold")
     if mode is None or mode == "":
@@ -161,8 +149,8 @@ def threshold_values(mode, values):
 
     The shared core of the per-tile split and the emptiness stage's pooled one, so the
     setting cannot mean one thing in one stage and something else in the other. `mode`
-    here is only "otsu", "li", or a number -- "pooled" is resolved by the caller, since
-    it names the emptiness stage's OWN result and would be circular there.
+    here is only "otsu", "li", or a number -- "pooled" is resolved by the caller, since it
+    names the emptiness stage's OWN result and would be circular there.
     """
     if not isinstance(mode, str):
         return float(mode), f"tile_threshold={float(mode):g}"
@@ -178,9 +166,9 @@ def threshold_catalogue(vol, chosen_mode=None, chosen=None):
     """Every method's threshold for one tile, so later stages need not re-read it.
 
     The stats stage is the only place that holds a whole tile in memory, and each method
-    costs tens of milliseconds against a read of seconds. Computing them all here means
-    `gain_floor = "li"` can pick a different split from `tile_threshold` without opening
-    a single array -- and without the two settings having to agree.
+    costs tens of milliseconds against a read of seconds. Computing them all here lets
+    `gain_floor = "li"` pick a different split from `tile_threshold` without opening an
+    array, and without the two settings having to agree.
 
     `chosen_mode`/`chosen` avoid recomputing the one `resolve_threshold` already did.
     """
@@ -193,48 +181,48 @@ def threshold_catalogue(vol, chosen_mode=None, chosen=None):
 def resolve_threshold(cfg, setup, vol):
     """The background/foreground split for one tile, honouring `tile_threshold`.
 
-    `"otsu"` (default) is per-tile Otsu. It is the right choice when every tile holds a
-    similar mix of tissue and background, and the wrong one when they do not: Otsu splits
-    whatever it is given, so a tile packed with bright structure gets a HIGH threshold and
-    its sparse neighbour a low one. Measured on a 3-tile worm: 245, 580, 1621 -- a 6.6x
-    spread on one specimen imaged one way.
+    `"otsu"` (default) is per-tile Otsu: right when every tile holds a similar mix of
+    tissue and background, wrong when they do not. Otsu splits whatever it is given, so a
+    tile packed with bright structure gets a HIGH threshold and its sparse neighbour a low
+    one. Measured on a 3-tile worm: 245, 580, 1621 -- a 6.6x spread on one specimen imaged
+    one way.
 
     That spread is not cosmetic, because this one number drives three things:
-      * `n_foreground`, hence `_classify` -- a tile whose threshold is too high falls
-        under MIN_FG_FRACTION, is called "empty", and is dropped from the gain solve and
-        passed through UNCORRECTED.
+      * `n_foreground`, hence `_classify` -- a tile whose threshold is too high falls under
+        MIN_FG_FRACTION, is called "empty", and is dropped from the gain solve and passed
+        through UNCORRECTED.
       * the gain solve's common floor (see `aggregate._common_floor`).
-      * the apply stage's mask -- a "bimodal" tile is rescaled only above its threshold,
-        so a threshold set too high leaves most of the tile untouched. This is the usual
-        cause of a seam that survives correction.
+      * the apply stage's mask -- a "bimodal" tile is rescaled only above its threshold, so a
+        threshold set too high leaves most of the tile untouched. This is the usual cause of
+        a seam that survives correction.
 
     WHY Otsu misses on sparse data, since the fix follows from it: Otsu maximizes
-    `w0*w1*(u0-u1)^2`, which assumes two classes of COMPARABLE SIZE. On a tile that is
-    ~99.9% background with a long bright tail, `w1` is negligible for any threshold in
-    the tail while `(u0-u1)^2` keeps growing quadratically as the threshold climbs it, so
-    the product keeps rising and the optimum lands deep in the tail -- measured at the
+    `w0*w1*(u0-u1)^2`, which assumes two classes of COMPARABLE SIZE. On a tile ~99.9%
+    background with a long bright tail, `w1` is negligible for any threshold in the tail
+    while `(u0-u1)^2` keeps growing quadratically as the threshold climbs it, so the
+    product keeps rising and the optimum lands deep in the tail -- measured at the
     99.6th-99.9th percentile of all three tiles of that worm. It therefore tracks how
     BRIGHT each tile's brightest structure is (max 22168/13296/6118 against thresholds
-    1621/580/245), which is exactly the quantity that differs between tiles and exactly
-    what must not be used to compare them. This is a property of the histogram, not of
-    the binning: 256 bins and 65536 bins give the identical answer.
+    1621/580/245), the one quantity that differs between tiles and must not be used to
+    compare them. A property of the histogram, not of the binning: 256 bins and 65536 bins
+    give the identical answer.
 
     Alternatives:
       * `"li"` -- minimum cross-entropy (Li & Lee 1993; iterative form Li & Tam 1998).
-        Minimizes the KL divergence between the image and its two-level reconstruction,
-        whose fixed point `t = (u1-u0)/(ln u1 - ln u0)` is the LOGARITHMIC mean of the
-        two class means -- where isodata's is the ARITHMETIC mean. The logarithmic mean
-        is always the smaller, and the gap widens as the classes separate (274.6 vs
-        628.2 on that worm's tile 0), which is exactly why Li resists a heavy tail: its
-        criterion grows logarithmically with class separation where Otsu's grows
-        quadratically. Verified against the identity on real tiles to within 0.4 counts.
-      * a NUMBER -- one floor for every tile, so the spread is 1.0x by construction.
-        Blunt, and usually the right answer once you have looked at the data: comparing
-        tiles needs cross-tile consistency more than per-tile optimality.
-      * `"pooled"` -- the dataset-wide `empty_threshold` from the emptiness stage.
-        Consistent across tiles by construction, but it is still an OTSU split, so it
-        inherits the failure above and is dominated by the brightest tile in the pool
-        (1114 on that worm, still far too high). Not a fix for sparse data.
+        Minimizes the KL divergence between the image and its two-level reconstruction, whose
+        fixed point `t = (u1-u0)/(ln u1 - ln u0)` is the LOGARITHMIC mean of the two class
+        means, where isodata's is the ARITHMETIC mean. The logarithmic mean is always the
+        smaller, and the gap widens as the classes separate (274.6 vs 628.2 on that worm's
+        tile 0) -- which is why Li resists a heavy tail: its criterion grows logarithmically
+        with class separation where Otsu's grows quadratically. Verified against the identity
+        on real tiles to within 0.4 counts.
+      * a NUMBER -- one floor for every tile, so the spread is 1.0x by construction. Blunt,
+        and usually right once you have looked at the data: comparing tiles needs cross-tile
+        consistency more than per-tile optimality.
+      * `"pooled"` -- the dataset-wide `empty_threshold` from the emptiness stage. Consistent
+        across tiles by construction, but still an OTSU split, so it inherits the failure
+        above and is dominated by the brightest tile in the pool (1114 on that worm, still
+        far too high). Not a fix for sparse data.
     """
     mode = threshold_mode(cfg)
     if mode != "pooled":
@@ -255,14 +243,14 @@ def _histogrammable(vol):
     ONE-PASS histogram and then iterates over ~65k bin centres, while floating input
     re-scans the whole array every iteration (`image[image > t].mean()`), allocating a
     fresh copy of the selected voxels each time. Measured on a 19.9M-voxel tile: 64 ms
-    integer vs 1000 ms float, and 190 MiB of peak allocation against a 76 MiB array. It
-    scales linearly, so a 268M-voxel tile pays seconds and gigabytes.
+    integer against 1000 ms float, and 190 MiB of peak allocation against a 76 MiB array.
+    It scales linearly, so a 268M-voxel tile pays seconds and gigabytes.
 
     That matters here because `_read_tile_volume` returns float32 whenever `apply_basic`
     is on (BaSiC's `correct()` casts), so the expensive path is reached by a config flag
-    that has nothing to do with thresholding. Rounding to uint16 costs nothing real: these
-    are photon counts, and sub-count precision cannot move a background/foreground split.
-    Only Li needs this -- `threshold_otsu` histograms either way.
+    with nothing to do with thresholding. Rounding to uint16 costs nothing real: these are
+    photon counts, and sub-count precision cannot move a background/foreground split. Only
+    Li needs this -- `threshold_otsu` histograms either way.
     """
     if vol.dtype.kind in "iu":
         return vol
@@ -274,7 +262,8 @@ def _histogrammable(vol):
 def _compute_stats(vol, thr=None):
     """Otsu background/foreground split + whole-volume stats for one tile's voxels.
 
-    `thr` overrides the per-tile Otsu split; see `resolve_threshold`."""
+    `thr` overrides the per-tile Otsu split; see `resolve_threshold`.
+    """
     # Whole-tile (unmasked) stats -- used by the apply stage's "uniform" branch
     # for tiles with no clean background/foreground split (see MIN_UNIFORM_STD).
     vol64 = vol.astype("float64")
@@ -313,11 +302,12 @@ def _compute_stats(vol, thr=None):
 def _merge_tile_stats(cfg, setup, fields):
     """Merge `fields` into a tile's stats JSON, preserving whatever is already there.
 
-    Two stages write this file and neither owns all of it: `stats` writes the Otsu split
-    and the tile's own moments, `emptiness` writes `empty_area` and `background_level`.
-    They also run in that reverse order -- `emptiness` first, because the BaSiC pass
-    needs its measurements -- so a wholesale overwrite by either one silently drops the
-    other's fields. Merging is what lets them be rerun independently."""
+    Two stages write this file and neither owns all of it: `stats` writes the split and
+    the tile's own moments, `emptiness` writes `empty_area` and `background_level`. They
+    also run in that reverse order -- `emptiness` first, because the BaSiC pass needs its
+    measurements -- so a wholesale overwrite by either silently drops the other's fields.
+    Merging is what lets them be rerun independently.
+    """
     out = stats_path(cfg, setup)
     out.parent.mkdir(parents=True, exist_ok=True)
     existing = {}
@@ -339,8 +329,9 @@ def _write_stats(cfg, setup, stats):
 
 def _read_tile_volume(cfg, setup):
     """One setup's downsampled volume, canonical (Z, Y, X), BaSiC-corrected when
-    `apply_basic` -- so the Otsu split and the foreground stats describe the same
-    values `apply` will write (see the module docstring)."""
+    `apply_basic` -- so the split and the foreground stats describe the same values
+    `apply` will write. See the module docstring.
+    """
     _, order = _input_location(cfg, setup, cfg["stats_scale"])
     arr = canonical_view(open_downsampled(cfg, setup), order)
     vol = arr.read(order="C").result()
@@ -388,9 +379,9 @@ _LIMIT_KEYS = {
 def limits(cfg=None):
     """The tile-classification thresholds, with any `cfg` overrides applied.
 
-    Returned as a plain dict rather than read from `cfg` at each site so that
-    `_classify` and `_enough_foreground` stay callable with no config at all -- they are
-    used from tests and from `bench/compare_thresholds.py`, neither of which has one.
+    A plain dict rather than a read from `cfg` at each site, so `_classify` and
+    `_enough_foreground` stay callable with no config at all: they are used from tests and
+    from `bench/compare_thresholds.py`, neither of which has one.
     """
     out = {k: globals()[const] for k, const in _LIMIT_KEYS.items()}
     if cfg:
@@ -402,10 +393,13 @@ def limits(cfg=None):
 
 
 def _enough_foreground(s, lim=None):
-    """Whole-tile emptiness test: is the foreground at least MIN_FG_FRACTION of the
-    tile's voxels? Uses `n_voxels` when present (written by `_compute_stats`, or
-    backfilled by `cmd_aggregate` from the tile shape); falls back to the legacy
-    absolute MIN_FOREGROUND count only for old stats files lacking `n_voxels`."""
+    """Whole-tile emptiness test: is the foreground at least MIN_FG_FRACTION of the tile's
+    voxels?
+
+    Uses `n_voxels` when present (written by `_compute_stats`, or backfilled by
+    `cmd_aggregate` from the tile shape), and falls back to the legacy absolute
+    MIN_FOREGROUND count only for old stats files that lack it.
+    """
     lim = limits() if lim is None else lim
     nv = s.get("n_voxels")
     if nv:
@@ -414,29 +408,30 @@ def _enough_foreground(s, lim=None):
 
 
 def _classify(s, lim=None):
-    """Pick the apply stage's correction strategy for one tile, from its empty frame
-    area (`empty_area`, injected by `cmd_aggregate` from the `emptiness` stage).
+    """Pick the apply stage's correction strategy for one tile, from its empty frame area
+    (`empty_area`, injected by `cmd_aggregate` from the `emptiness` stage).
 
     - "bimodal": the tile really does contain background (`empty_area` at or above
       MIN_BACKGROUND_AREA), so mask the background out and rescale the foreground only.
-    - "uniform": real signal fills the whole tile with no separable background, so
-      treat every pixel as foreground (`thr = -inf` in `_apply`) and rescale using
-      whole-tile mean/std.
-    - "empty": too few candidate foreground pixels, or a whole-tile std near the noise
-      floor -- an actually empty/all-noise tile. Passed through unmodified.
+    - "uniform": real signal fills the whole tile with no separable background, so treat
+      every pixel as foreground (`thr = -inf` in `_apply`) and rescale on whole-tile
+      mean/std.
+    - "empty": too few candidate foreground pixels, or a whole-tile std near the noise floor
+      -- an actually empty/all-noise tile. Passed through unmodified, and dropped from the
+      gain solve entirely.
 
     The bimodal-vs-uniform question is "does this tile contain genuine background", and
-    `empty_area` answers it directly. This used to be decided by testing Otsu's
-    class-mean gap against a fixed 50-count bar, which cannot answer it: where a tile has no background
-    Otsu bisects *tissue*, and a within-tissue split easily puts the class means far
-    apart. Measured on RID19 s15, all 20 tiles cleared that bar -- including 15 with
-    `empty_area` under 0.0006 that are plainly "uniform" -- and the two groups' gap
-    ranges OVERLAP (77-90 for tiles with real background, 52-103 for those without), so
-    no threshold on that statistic separates them. `empty_area` separates them by 469x.
+    `empty_area` answers it directly. This used to be decided by testing Otsu's class-mean
+    gap against a fixed 50-count bar, which cannot answer it: where a tile has no
+    background Otsu bisects *tissue*, and a within-tissue split easily puts the class
+    means far apart. Measured on RID19 s15, all 20 tiles cleared that bar -- including 15
+    with `empty_area` under 0.0006 that are plainly "uniform" -- and the two groups' gap
+    ranges OVERLAP (77-90 with real background, 52-103 without), so no threshold on that
+    statistic separates them. `empty_area` separates them by 469x.
 
-    Getting this wrong is not cosmetic: a "bimodal" tile is masked at its own Otsu
-    threshold, so those 15 tiles were receiving no intensity rescale at all across
-    67-87% of their voxels.
+    Getting this wrong is not cosmetic: a "bimodal" tile is masked at its own threshold,
+    so those 15 tiles were receiving no intensity rescale at all across 67-87% of their
+    voxels.
     """
     lim = limits() if lim is None else lim
     empty_area = s.get("empty_area")

@@ -4,18 +4,17 @@
 right shape on a cluster and useless on a workstation. This walks the same units in a
 single process instead, so a dataset small enough to sit on one machine needs no queue.
 
-It is a driver, not a second implementation -- every stage below is the same function the
-bsub scripts invoke. What changes is only who loops over the units.
+A driver, not a second implementation -- every stage below is the same function the bsub
+scripts invoke. Only who loops over the units changes.
 
     python -m spotlight run basic
     python -m spotlight run intensity --stop-after aggregate
     python -m spotlight run both --dry-run
 
-Sequential over units, on purpose. Each stage is already concurrent inside itself
-(asyncio over reads, a thread pool for the numpy) and sized to a memory budget derived
-from the whole machine -- so running two units at once would double the memory while
-competing for the same saturated I/O. The parallelism that pays here is already inside
-the unit.
+Sequential over units, on purpose. Each stage is already concurrent inside itself (asyncio
+over reads, a thread pool for the numpy) and sized to a memory budget derived from the
+whole machine, so running two units at once would double the memory while competing for
+the same saturated I/O. The parallelism that pays here is already inside the unit.
 """
 
 import time
@@ -47,19 +46,19 @@ def apply_basic_for(pipeline):
     That is the right question for a single stage and the WRONG one for a pipeline,
     because a pipeline can create the very files the detection looks at: in `both`, the
     `basic` stage writes Flat-field.tif three steps before `int-stats` needs the answer.
-    Detected once at the start, `both` therefore ran `int-stats`/`int-aggregate` as raw
-    (the fields did not exist yet) and then hit the `correct` stage, which sets
-    `apply_basic = (mode == "both")` unconditionally -- and the two disagreed:
+    Detected once at the start, `both` therefore ran `int-stats`/`int-aggregate` as raw --
+    the fields did not exist yet -- and then hit the `correct` stage, which sets
+    `apply_basic = (mode == "both")` unconditionally:
 
         RuntimeError: intensity_target.json was written with apply_basic=False but
         this run has apply_basic=True
 
-    It also fails the other way: with fields left over from an earlier run, `intensity`
-    would detect True, write stats from corrected voxels, and then correct as raw.
+    It fails the other way too: with fields left over from an earlier run, `intensity`
+    would detect True, write stats from corrected voxels, then correct as raw.
 
-    The pipeline name already states the intent, so take it from there and hold it for
-    the whole run. This matches `correct._view` exactly, which is the file the check
-    compares against.
+    The pipeline name already states the intent, so take it from there and hold it for the
+    whole run. This matches `correct._view` exactly, which is the file the check compares
+    against.
     """
     if pipeline not in PIPELINES:
         raise ValueError(f"unknown pipeline {pipeline!r}; expected one of {sorted(PIPELINES)}")

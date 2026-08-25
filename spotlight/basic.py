@@ -1,14 +1,14 @@
 """BaSiC flat-field / dark-field estimation.
 
-Implements the BaSiC algorithm (Peng et al., Nature Communications 2017):
-  "A BaSiC tool for background and shading correction of optical microscopy images"
+Implements the BaSiC algorithm (Peng et al., Nature Communications 2017), "A BaSiC tool
+for background and shading correction of optical microscopy images".
 
 A line-by-line port of `src/basic.jl`, deliberately: the goal is that this produces the
 same fields as the Julia version on the same qstack, so the two can be diffed. Where a
 numpy idiom would reorder the arithmetic, the Julia order wins.
 
-Given a per-camera quantile stack (written by `save_qstack`), estimates a flat-field and
-a dark-field and writes them where the apply stages expect:
+Given a per-camera quantile stack (written by `save_qstack`), estimates a flat-field and a
+dark-field and writes them where the apply stages expect:
   {results_root}/camera{N}/Flat-field.tif
   {results_root}/camera{N}/Dark-field.tif
 """
@@ -257,10 +257,10 @@ def basic_estimate(images, *, lam=0.0, lambda_darkfield=0.0, estimate_darkfield=
 
     `output_size` is the (rows, cols) the fields come back at; `None` means the input
     stack's own frame. The fit always happens on the `working_size` grid and the single
-    resize out of it goes straight to `output_size`, so asking for a frame LARGER than
-    the input stack costs no extra interpolation -- it just retargets the resize that
-    already happens. That is what lets a `basic_stats_level > 0` fit publish full-size
-    fields without a second pass through the coarse frame.
+    resize out of it goes straight to `output_size`, so asking for a frame LARGER than the
+    input stack costs no extra interpolation -- it just retargets the resize that already
+    happens. That is what lets a `basic_stats_level > 0` fit publish full-size fields
+    without a second pass through the coarse frame.
 
     `_norm_two` overrides the spectral norm. It exists for parity testing: injecting
     Julia's value tells a LAPACK disagreement apart from a port bug without a bisect.
@@ -411,7 +411,6 @@ _VRANGE_FACTOR = 1.5
 
 def fourier_l0(flat):
     """Fraction of the flat field's high-frequency DCT coefficients above `_FOURIER_TAU`.
-
     Small means smooth; large means foreground texture or noise leaked into the field.
 
     Two conversions from the reference implementation. `_FOURIER_TAU` is calibrated
@@ -419,7 +418,7 @@ def fourier_l0(flat):
     in this module is scaled up by the ortho->unnormalised factor for a coefficient with
     both indices non-zero -- which is every coefficient counted here, since the u=0 and
     v=0 edges are excluded. And BaSiCPy compares the SIGNED coefficient to the threshold
-    while the paper says amplitude; a sign-asymmetric count measures nothing, so this
+    where the paper says amplitude; a sign-asymmetric count measures nothing, so this
     takes the modulus.
     """
     cal = (LAMBDA_CAL_SIZE, LAMBDA_CAL_SIZE)
@@ -452,7 +451,7 @@ def autotune_cost(corrected, flat, v_range):
     """Entropy of the corrected stack plus the hinged high-frequency cost of `flat`.
 
     `v_range` is fixed once by the caller from the default-lambda fit; the window's lower
-    edge tracks each candidate's own background so the histogram stays aligned with it.
+    edge tracks each candidate's own background, so the histogram stays aligned with it.
     """
     vmin = float(np.quantile(corrected, 0.01)) * _VMIN_FACTOR
     hinge = max(0.0, fourier_l0(flat) - _FOURIER_HINGE) * _FOURIER_COEF
@@ -562,14 +561,14 @@ def measured_background_level(cfg, camera):
 def warn_if_darkfield_collapsed(darkfield, measured, label):
     """Report -- but do NOT repair -- a darkfield that collapsed against the background.
 
-    Only meaningful when BaSiC actually FITTED a darkfield. With `estimate_darkfield`
-    off the field is zero by request, and with an override it is whatever was supplied;
-    neither is a collapse, and the caller does not call this for either.
+    Only meaningful when BaSiC actually FITTED one. With `estimate_darkfield` off the
+    field is zero by request, and with an override it is whatever was supplied; neither is
+    a collapse, and the caller does not call this for either.
 
-    Reports only. Substituting the measured value here would be worse than useless: the
-    flat field has already been solved against the collapsed darkfield, and swapping the
-    darkfield afterwards leaves a pair of files that each look reasonable alone and are
-    wrong together. The fit has to be redone with the darkfield known.
+    Substituting the measured value here would be worse than useless: the flat field has
+    already been solved against the collapsed darkfield, so swapping the darkfield
+    afterwards leaves a pair of files that each look reasonable alone and are wrong
+    together. The fit has to be redone with the darkfield known.
     """
     if measured is None:
         return
@@ -588,9 +587,9 @@ def resolve_darkfield_override(cfg, camera, params):
     """The darkfield to hold fixed for this camera, or None to fit one.
 
     `override_darkfield` is False (fit it), True (use the emptiness stage's measured
-    background level), or a number of raw counts. True with no measurement available is
-    an error rather than a silent fallback -- the whole point of asking for the override
-    is not to get a fitted darkfield.
+    background level), or a number of raw counts. True with no measurement available is an
+    error rather than a silent fallback -- the whole point of asking for the override is
+    not to get a fitted darkfield.
     """
     ovr = params["override_darkfield"]
     if ovr is False:

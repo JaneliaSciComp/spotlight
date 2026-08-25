@@ -21,10 +21,9 @@ import sweep_concurrency as sweep
 @pytest.fixture
 def fake_stage(monkeypatch):
     """Replace the subprocess with a model whose wall time is a known function of
-    concurrency, so the harness's arithmetic has a right answer to find.
-
-    Modelled on what was actually measured: time falls as concurrency rises until the
-    reads saturate, then flattens. A knee, not a peak.
+    concurrency, so the harness's arithmetic has a right answer to find. Modelled on what
+    was measured: time falls as concurrency rises until the reads saturate, then flattens.
+    A knee, not a peak.
     """
     calls = []
 

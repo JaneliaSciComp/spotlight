@@ -1,7 +1,7 @@
 """On-disk layout: which driver, which path, which axis order.
 
 A leaf module by necessity, not taste. `config.load_config` validates the configured
-formats against `FORMATS`, and `stores.py` imports `config` -- so putting this table in
+formats against `FORMATS`, and `stores.py` imports `config`, so putting this table in
 `stores.py` would close a cycle. Nothing here imports anything else in the package.
 
 Internally every volume is canonical (Z, Y, X); this is the only place that knows how a
@@ -14,9 +14,9 @@ Two of the six are not this codebase's own convention:
   declared with the non-standard axes order [x, y, z] (x FIRST, not last), nested under a
   "raw/" subgroup with "s"-prefixed scale dirs (s0, s1, ...) -- distinct from this
   package's own flat "0", "1", ... scale dirs.
-* `zarr3_zyx` (typically the OUTPUT) writes the standard 3-D NGFF spatial order
-  [z, y, x] instead of the default 5-D (t, c, z, y, x), so tools downstream of the
-  correction that assume the standard order need no changes to read the result.
+* `zarr3_zyx` (typically the OUTPUT) writes the standard 3-D NGFF spatial order [z, y, x]
+  instead of the default 5-D (t, c, z, y, x), so tools downstream of the correction that
+  assume the standard order need no changes to read the result.
 """
 
 import json
@@ -56,9 +56,9 @@ _AXES_ZYX = [
 def _ngff_datasets(factors, order="tczyx"):
     """OME-NGFF `datasets` list from cumulative (fz, fy, fx) factors per level.
 
-    scale = cumulative downsample factor; translation = half-pixel offset
-    max(scale/2 - 0.5, 0) per axis (the standard OME-NGFF mean-downsample offset).
-    `order` picks the scale/translation array length: 5-D (t,c,z,y,x) or 3-D (z,y,x).
+    scale = cumulative downsample factor; translation = the standard OME-NGFF
+    mean-downsample offset `max(scale/2 - 0.5, 0)` per axis. `order` picks the array
+    length: 5-D (t,c,z,y,x) or 3-D (z,y,x).
     """
     out = []
     for level, (fz, fy, fx) in enumerate(factors):
@@ -111,26 +111,29 @@ def _path(fmt, root, setup, scale):
 
 def _output_path(fmt, root, setup, scale):
     """Path for one level of an OUTPUT array under `root` (`output_intensity_path`).
-    Always the plain bare-integer-scale convention -- output is always written
-    by this codebase's own writers, never read from a pre-existing layout, so
-    there's no non-standard convention to resolve here (unlike `_input_location`)."""
+
+    Always the plain bare-integer-scale convention: output is always written by this
+    codebase's own writers, never read from a pre-existing layout, so there is no
+    non-standard convention to resolve (unlike `_input_location`).
+    """
     if fmt == "n5":
         return f"{root}/setup{setup}/timepoint0/s{scale}"
     return f"{root}/s{setup}-t0.zarr/{scale}"
 
 
 def _resolve_zarr3(root, setup, scale):
-    """Resolve (path, order) for one level of a zarr3-driven INPUT array from
-    its OME-NGFF group metadata (`s{setup}-t0.zarr/zarr.json`'s
-    `multiscales[0].datasets[scale].path` and the resolved array's own
-    `dimension_names`), instead of assuming a fixed scale-directory name or
-    axis order -- so a non-standard on-disk layout (e.g. TensorSwitch's
-    dataset nested under a `raw/` subgroup, axes declared [x, y, z] -- see
-    https://github.com/JaneliaSciComp/tensorswitch) is discovered, not
-    special-cased. Returns None if there's no OME group metadata, or no such
-    level -- the caller then falls back to the static `_SPEC`/`_path`
-    convention. Output paths are unaffected (`open_output_array` always
-    writes its own known layout, never reads a pre-existing one).
+    """Resolve (path, order) for one level of a zarr3-driven INPUT array from its OME-NGFF
+    group metadata -- `s{setup}-t0.zarr/zarr.json`'s `multiscales[0].datasets[scale].path`
+    and the resolved array's own `dimension_names`.
+
+    Reading them beats assuming a fixed scale-directory name and axis order, so a
+    non-standard on-disk layout is discovered rather than special-cased: TensorSwitch
+    nests its dataset under a `raw/` subgroup and declares axes [x, y, z]
+    (https://github.com/JaneliaSciComp/tensorswitch).
+
+    Returns None if there is no OME group metadata, or no such level; the caller then
+    falls back to the static `_SPEC`/`_path` convention. Output paths are unaffected --
+    `open_output_array` always writes its own known layout.
     """
     group_dir = f"{root}/s{setup}-t0.zarr"
     try:
@@ -167,11 +170,12 @@ def _resolve_zarr3(root, setup, scale):
 
 
 def _input_location(cfg, setup, scale):
-    """(path, order) for one level of the configured INPUT array. Resolved
-    from OME-NGFF group metadata for zarr3-driven formats (see
-    `_resolve_zarr3`); falls back to the static `_SPEC`/`_path` convention
-    when no such metadata is found, or for n5/zarr2 (which don't carry it in
-    this codebase)."""
+    """(path, order) for one level of the configured INPUT array.
+
+    Resolved from OME-NGFF group metadata for zarr3-driven formats (see `_resolve_zarr3`),
+    falling back to the static `_SPEC`/`_path` convention when none is found, or for
+    n5/zarr2, which do not carry it in this codebase.
+    """
     fmt = cfg["input_format"]
     spec = _SPEC[fmt]
     if spec["driver"] == "zarr3":
@@ -202,22 +206,22 @@ def _in_order(zyx, order):
 
 
 def canonical_view(arr, order):
-    """A TensorStore view of `arr` whose own index order is canonical (Z, Y, X),
-    so it can be indexed `[z0:z1, y0:y1, x0:x1]` and `.read(order="C")` hands back
-    a C-contiguous canonical array -- no numpy transpose, and no `to_canonical`.
+    """A TensorStore view of `arr` whose own index order is canonical (Z, Y, X), so it can
+    be indexed `[z0:z1, y0:y1, x0:x1]` and `.read(order="C")` hands back a C-contiguous
+    canonical array -- no numpy transpose, and no `to_canonical`.
 
-    This matters for more than tidiness. `np.array(view.transpose(...))` defaults
-    to `order="K"`, which PRESERVES the transposed layout: for an xyz-stored
-    source (n5, zarr3_raw) that yields an F-contiguous "canonical" array, on which
-    every elementwise pass over a (Y, X) coefficient plane is strided -- measured
-    ~7x slower in `_correct_shard` than the same data C-ordered. Transposing it in
-    numpy instead costs a slow single-threaded strided copy. Handing the transpose
-    to TensorStore is much cheaper than either: it fuses into chunk decoding
-    (no extra pass) and runs across `data_copy_concurrency`.
+    This matters for more than tidiness. `np.array(view.transpose(...))` defaults to
+    `order="K"`, which PRESERVES the transposed layout: for an xyz-stored source (n5,
+    zarr3_raw) that yields an F-contiguous "canonical" array, on which every elementwise
+    pass over a (Y, X) coefficient plane is strided -- measured ~7x slower in
+    `_correct_shard` than the same data C-ordered. Transposing in numpy instead costs a
+    slow single-threaded strided copy. Handing the transpose to TensorStore is cheaper
+    than either: it fuses into chunk decoding, with no extra pass, and runs across
+    `data_copy_concurrency`.
 
-    Symmetrically for writes: `canonical_view(out, ...)[z, y, x].write(canon)`
-    lets TensorStore absorb the transpose into encoding, instead of handing it a
-    strided `from_canonical` view.
+    Symmetrically for writes: `canonical_view(out, ...)[z, y, x].write(canon)` lets
+    TensorStore absorb the transpose into encoding, instead of handing it a strided
+    `from_canonical` view.
     """
     if order == "tczyx":
         return arr[0, 0]        # drop the T=1, C=1 singletons
@@ -254,10 +258,10 @@ def in_plane_order(cfg):
 def in_plane_swap(plane, order):
     """Convert a 2-D plane between canonical (Y, X) and the qstack's in-plane `order`.
 
-    Its own inverse -- the conversion is one transpose or nothing -- so a single function
-    serves both directions: `run_basic_camera` turning BaSiC's qstack-ordered field into the
-    canonical plane it writes, and `empty_fraction_map` turning the canonical map on disk
-    back into the order the qstack it un-mixes is in.
+    Its own inverse -- the conversion is one transpose or nothing -- so one function
+    serves both directions: `run_basic_camera` turning BaSiC's qstack-ordered field into
+    the canonical plane it writes, and `empty_fraction_map` turning the canonical map on
+    disk back into the qstack's order.
     """
     return np.ascontiguousarray(plane.T) if order == "xy" else plane
 
@@ -266,9 +270,9 @@ def canonical_plane(plane, expected_yx, order, what=""):
     """A stored plane as canonical (Y, X), given the (Y, X) size it should cover.
 
     The transpose is accepted with a warning only when the shape rules the expected order
-    out -- what a plane written by a differently-formatted earlier run looks like. Anything
-    that is neither is an error rather than a guess: silently un-mixing or dividing by a
-    plane whose axes are swapped corrupts every voxel it touches.
+    out -- what a plane written by a differently-formatted earlier run looks like.
+    Anything that is neither is an error rather than a guess: silently un-mixing or
+    dividing by a plane whose axes are swapped corrupts every voxel it touches.
     """
     Y, X = expected_yx
     expected = (Y, X) if order == "yx" else (X, Y)

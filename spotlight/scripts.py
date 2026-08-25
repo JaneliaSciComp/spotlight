@@ -1,13 +1,12 @@
 """LSF submission scripts.
 
-Every stage -- the BaSiC ones and the per-tile intensity ones -- is now reachable through
-the same `python -m spotlight <stage>` entry point, so there is one runner string here
-instead of one per pipeline.
+Every stage -- the BaSiC ones and the per-tile intensity ones -- is reachable through the
+same `python -m spotlight <stage>` entry point, so there is one runner string here instead
+of one per pipeline.
 
 The scripts are written to the CURRENT WORKING DIRECTORY, and every stage re-reads
-`LocalPreferences.toml` from its own job's working directory at run time. So the LSF
-job's working directory has to be the one the scripts were generated from; run them from
-there.
+`LocalPreferences.toml` from its own job's working directory at run time. So the LSF job's
+working directory has to be the one the scripts were generated from; run them from there.
 """
 
 import json
@@ -33,16 +32,17 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 def runner():
     """The command that runs a spotlight stage inside this checkout's pixi environment.
 
-    The manifest path is derived from `__file__` rather than configured, so a moved checkout
-    fixes itself the next time the scripts are regenerated. `spotlight` comes from the
-    environment -- a `[pypi-dependencies]` entry installed editable, so `pixi run` alone puts
-    it on the path; run `pixi install` after moving or first cloning.
+    The manifest path is derived from `__file__` rather than configured, so a moved
+    checkout fixes itself the next time the scripts are regenerated. `spotlight` comes
+    from the environment -- a `[pypi-dependencies]` entry installed editable, so `pixi
+    run` alone puts it on the path; run `pixi install` after moving or first cloning.
 
     MALLOC_ARENA_MAX caps glibc's per-thread malloc arenas, which otherwise retain every
-    thread's freed numpy temporaries. It has to be in the ENVIRONMENT ahead of the process:
-    glibc reads it when it creates the first arena, long before `__main__`. The `:-` default
-    lets the submitting shell override it. There are deliberately no BLAS/OpenMP caps beside
-    it -- those were measured and rejected. Both, plus the numbers: CLAUDE.md.
+    thread's freed numpy temporaries. It has to be in the ENVIRONMENT ahead of the
+    process: glibc reads it when it creates the first arena, long before `__main__`. The
+    `:-` default lets the submitting shell override it. There are deliberately no
+    BLAS/OpenMP caps beside it -- those were measured and rejected. Both, plus the
+    numbers: CLAUDE.md.
     """
     return ('MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-4} '
             f"pixi run --manifest-path {PACKAGE_ROOT} python -m spotlight")
@@ -53,11 +53,11 @@ def _throttle(cfg, cores, n_jobs, n_arrays=1):
 
     Budgeted in CORES, not jobs -- what the script holds is `cores * throttle * n_arrays`,
     so the budget is divided by both the cores one element asks for AND the number of
-    arrays the script submits together (the stats pass submits one per camera, and they all
-    run at once). A throttle written in jobs means a 48-core stats stage and a 20-core
-    apply stage hold wildly different amounts of the cluster for the same number. Capped at
-    the array size (a throttle above it does nothing) and floored at 1, so a single element
-    of an over-budget stage still runs rather than the array never starting.
+    arrays the script submits together (the stats pass submits one per camera, and they
+    all run at once). A throttle written in jobs means a 48-core stats stage and a 20-core
+    apply stage hold wildly different amounts of the cluster for the same number. Capped
+    at the array size (a throttle above it does nothing) and floored at 1, so a single
+    element of an over-budget stage still runs rather than the array never starting.
     """
     return f"%{max(1, min(n_jobs, cfg['max_concurrent_cores'] // (cores * n_arrays)))}"
 
@@ -72,8 +72,8 @@ def ensure_log_dirs(cfg):
     The stem is a PREFIX, not a directory (`.../output/output` -> files named
     `output_correct_1.txt`), so what has to exist is the parent of the FORMATTED path, not
     of the stem. Taking the parent of the stem itself is off by one level whenever the
-    stem ends in a separator (`.../logs/output/` -> logs of `.../logs/output/_correct.txt`,
-    living one directory deeper than `Path(stem).parent` says).
+    stem ends in a separator: `.../logs/output/` gives logs at
+    `.../logs/output/_correct.txt`, one directory deeper than `Path(stem).parent` says.
     """
     for key in ("output_stem", "error_stem"):
         stem = cfg.get(key)
@@ -98,7 +98,7 @@ def _watchdog(cfg):
 
     An element that blocks on a wedged NFS mount does not fail -- it holds its slots until
     someone notices. `-W` is the only thing that bounds that, and `-Q` is what turns the
-    kill into another attempt instead of a hole in the output. Both are pointless without
+    kill into another attempt instead of a hole in the output. Each is pointless without
     the other: `-W` alone loses the tile, `-Q` alone never fires.
     """
     minutes = int(cfg.get("lsf_runlimit_minutes", _config.DEFAULTS["lsf_runlimit_minutes"]))
@@ -166,10 +166,10 @@ def emptiness_is_measured(cfg):
 def ensure_emptiness(cfg, force=False):
     """Run the emptiness stage unless its measurements are already on disk.
 
-    Skipped by default because it rescans EVERY tile -- on a large mosaic that is real
-    work to reproduce numbers that are already there, and both script generators would
-    otherwise redo it every time they are called. Pass `force=True` after changing the
-    data or the tile set, since a stale `empty_area` is reused silently.
+    Skipped by default because it rescans EVERY tile: on a large mosaic that is real work
+    to reproduce numbers that are already there, and both script generators would
+    otherwise redo it every call. Pass `force=True` after changing the data or the tile
+    set, since a stale `empty_area` is reused silently.
     """
     if not force and emptiness_is_measured(cfg):
         print("emptiness: measurements already on disk for every tile; skipping "
@@ -315,9 +315,9 @@ def write_correction_script(cfg=None, mode="basic"):
 
     Pinned to `--mode basic` rather than left on `auto`. This script exists for the
     flat/dark stage specifically -- the joint route is
-    `create_intensity_correction_script` -- and `auto` would silently upgrade to `both`
-    if an `intensity_target.json` happened to be sitting in `results_root` from an
-    earlier experiment. Pass `mode=` to override.
+    `create_intensity_correction_script` -- and `auto` would silently upgrade to `both` if
+    an `intensity_target.json` happened to be sitting in `results_root` from an earlier
+    experiment. Pass `mode=` to override.
     """
     cfg = _config.load_config() if cfg is None else cfg
     ensure_log_dirs(cfg)
@@ -331,11 +331,11 @@ def write_correction_script(cfg=None, mode="basic"):
 def create_intensity_correction_script(cfg=None):
     """Write the three per-tile intensity-correction scripts.
 
-    Run them in order, waiting for each stage's jobs to finish before submitting the next
-    -- there is no `-w` dependency between them, since LSF name-based dependencies proved
+    Run them in order, waiting for each stage's jobs to finish before submitting the next:
+    there is no `-w` dependency between them, since LSF name-based dependencies proved
     unreliable here.
 
-    1. `bsub_int_stats.sh`     -- per-tile foreground mean/std behind an Otsu background mask
+    1. `bsub_int_stats.sh`     -- per-tile foreground mean/std behind a background mask
     2. `bsub_int_aggregate.sh` -- one job: solves per-tile gains from overlapping pairs,
                                   reduces every tile's stats into a single target
     3. `bsub_int_correct.sh`   -- rescales each setup to the target, writing the pyramid

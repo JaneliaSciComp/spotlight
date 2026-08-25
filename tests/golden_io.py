@@ -20,9 +20,9 @@ def load_json(name):
 def load_bin(name):
     """A raw dump plus its sidecar, back as the array Julia held.
 
-    Julia is column-major, so the sidecar says order="F" and the reshape honours it --
-    reading these C-ordered would transpose every golden, which is exactly the class of
-    bug they exist to catch.
+    Julia is column-major, so the sidecar says order="F" and the reshape honours it.
+    Reading these C-ordered would transpose every golden -- the class of bug they exist to
+    catch.
     """
     meta = load_json(name + ".json")
     dtype = {"Float32": "<f4", "Float64": "<f8", "UInt16": "<u2"}[meta["dtype"]]

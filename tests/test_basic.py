@@ -25,10 +25,10 @@ pytestmark = pytest.mark.skipif(
 
 def test_dct_matches_fftw():
     """Julia reaches the orthonormal DCT from FFTW's UNNORMALISED REDFT10 times its own
-    weights; scipy's norm="ortho" is already that. Transcribing the weights would scale
+    weights; scipy's norm="ortho" is already that, so transcribing the weights would scale
     the whole transform wrong.
 
-    `atol` is set against the transform's own scale (coefficients here reach ~2.8e3), not
+    `atol` is set against the transform's own scale (coefficients reach ~2.8e3), not
     against zero: FFTW and pocketfft accumulate in a different order, so the handful of
     near-zero coefficients disagree in their last float32 bits. A relative bound alone
     would fail on those while saying nothing about the coefficients that matter.
@@ -119,9 +119,9 @@ def test_converged_fit_matches_julia():
     """The full ALM, float32 and iterative, against the Julia fields.
 
     Looser than the primitives on purpose: the convergence tests are data-dependent, so a
-    1e-7 drift can change the last iteration taken. The flat field is the thing every
-    consumer divides by, so it gets the tight bound; the darkfield is an additive
-    pedestal in counts, so it gets an absolute one.
+    1e-7 drift can change the last iteration taken. The flat field is what every consumer
+    divides by, so it gets the tight bound; the darkfield is an additive pedestal in
+    counts, so it gets an absolute one.
     """
     stack = load_bin("basic_stack")
     flat, dark = basic.basic_estimate(stack, estimate_darkfield=True, working_size=0)
@@ -169,8 +169,8 @@ def test_all_zero_stack_is_rejected():
 def _run_camera(tmp_path, monkeypatch, measured, **overrides):
     """Fit one synthetic camera through `run_basic_camera`, bypassing the store.
 
-    Goes through the driver rather than `basic_estimate` directly, because the guard
-    under test lives there -- calling the estimator would skip it entirely.
+    Goes through the driver rather than `basic_estimate` directly, because the guard under
+    test lives there -- calling the estimator would skip it entirely.
     """
     from spotlight import basic
     from spotlight.config import BASIC_DEFAULTS
@@ -196,10 +196,9 @@ def _run_camera(tmp_path, monkeypatch, measured, **overrides):
 
 def test_collapse_warning_is_silent_when_darkfield_is_not_estimated(tmp_path, capsys,
                                                                     monkeypatch):
-    """With `estimate_darkfield` off the field is zero BY REQUEST, so it has not
-    collapsed -- warning about it sends the reader to change a setting they chose.
-
-    Measured background is set absurdly high so the check would certainly fire if it ran.
+    """With `estimate_darkfield` off the field is zero BY REQUEST, so it has not collapsed
+    -- warning about it sends the reader to change a setting they chose. Measured
+    background is set absurdly high so the check would certainly fire if it ran.
     """
     _run_camera(tmp_path, monkeypatch, measured=1e6, estimate_darkfield=False)
     assert "collapsed" not in capsys.readouterr().out

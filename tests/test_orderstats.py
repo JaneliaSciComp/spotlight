@@ -75,7 +75,7 @@ def test_trailing_partial_block_is_discarded():
 def test_p_exceeds_data_leaves_value_zero():
     """No block ever completes, so every quantile reads 0 while the extrema are real.
 
-    This is the all-zero-qstack failure mode; it is reproduced, not fixed, so that a
+    This is the all-zero-qstack failure mode. It is reproduced, not fixed, so a
     misconfigured chunk depth looks the same in both implementations.
     """
     g = _case("p_exceeds_data")
@@ -110,8 +110,8 @@ def test_merge(name):
 def test_merge_weights_observations_not_blocks():
     """`a` holds 2 complete blocks from 10 observations; `b` holds 2 from 8.
 
-    The weight is 8/18, not 2/4. Weighting by blocks is the single most likely way this
-    port silently disagrees with Julia, and it never raises.
+    The weight is 8/18, not 2/4. Weighting by blocks is the likeliest way this port
+    silently disagrees with Julia, and it never raises.
     """
     g = _case("merge_partial_block")
     a = _fit1(g["ys"], g["p"]).merge(_fit1(g["ys_b"], g["p"]))
@@ -152,10 +152,10 @@ def test_merging_different_block_sizes_raises():
 def test_r7_quantiles_match_julia():
     """The written uint16 must match exactly; the float64 intermediate to within an ulp.
 
-    Bit-exactness on the float is not achievable and not worth chasing: LLVM contracts
-    the interpolation inside `Statistics._quantile` into an FMA, which differs by an ulp
-    and is not stable across architectures. What the pipeline actually writes is the
-    rounded value, and that is asserted exactly.
+    Bit-exactness on the float is not achievable and not worth chasing: LLVM contracts the
+    interpolation inside `Statistics._quantile` into an FMA, which differs by an ulp and
+    is not stable across architectures. What the pipeline writes is the rounded value, and
+    that is asserted exactly.
     """
     g = load_json("quantiles_r7.json")
     v = np.asarray(g["value"]).reshape(1, 1, -1)
@@ -228,10 +228,9 @@ def test_fit_is_the_exactly_rounded_mean():
 
     For uint16 input the batch mean is not merely close to the true mean, it IS the
     correctly-rounded one: `nblk * 65535` is far under 2^53, so every partial sum in
-    numpy's pairwise reduction is an exactly representable integer and the single
-    division is correctly rounded. Asserting that is better than asserting agreement
-    with Julia, whose running fold accumulates ~1e-13 per value -- see
-    `test_julia_fold_is_less_accurate_than_this_port`.
+    numpy's pairwise reduction is an exactly representable integer and the single division
+    is correctly rounded. Better than asserting agreement with Julia, whose running fold
+    accumulates ~1e-13 per value -- see `test_julia_fold_is_less_accurate_than_this_port`.
     """
     from fractions import Fraction
 
@@ -248,12 +247,12 @@ def test_fit_is_the_exactly_rounded_mean():
 
 
 def test_julia_fold_is_less_accurate_than_this_port():
-    """Pins the DIRECTION of the disagreement, so nobody 'fixes' it the wrong way.
+    """Pins the DIRECTION of the disagreement, so nobody "fixes" it the wrong way.
 
     Julia folds each block into a running mean because `OnlineStats` is a streaming
-    accumulator that never holds the data. This port has the whole chunk resident and
-    sums instead. Both are correct implementations of the same statistic; only one is
-    exactly rounded.
+    accumulator that never holds the data; this port has the whole chunk resident and sums
+    instead. Both are correct implementations of the same statistic; only one is exactly
+    rounded.
     """
     from fractions import Fraction
 
@@ -279,15 +278,13 @@ def test_julia_fold_is_less_accurate_than_this_port():
 def test_written_uint16_matches_julia_within_one_count():
     """The tolerance a real Julia-vs-Python array diff should use, measured not assumed.
 
-    Two effects survive into the written values: the batch-vs-fold mean above, and
-    Julia's `fma` in the R-7 interpolation position, which Python cannot reproduce.
-    Measured here: 23/27600 differ, always by exactly 1. Isolating them on a subset, the
-    fma accounts for all of it and the mean for none -- so matching Julia's fold would
-    buy nothing.
+    Two effects survive into the written values: the batch-vs-fold mean above, and Julia's
+    `fma` in the R-7 interpolation position, which Python cannot reproduce. Measured here:
+    23/27600 differ, always by exactly 1. Isolating them on a subset, the fma accounts for
+    all of it and the mean for none -- so matching Julia's fold would buy nothing.
 
-    The bounds are deliberately loose enough not to be brittle and tight enough to catch
-    a real porting bug, which would move far more than 0.2% of values or more than 1
-    count.
+    The bounds are loose enough not to be brittle and tight enough to catch a real porting
+    bug, which would move far more than 0.2% of values or more than 1 count.
     """
     a = load_bin("divergence_input")
     g = load_json("divergence_stats.json")

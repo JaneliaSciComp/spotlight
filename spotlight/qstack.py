@@ -34,8 +34,8 @@ from .formats import in_plane_order, in_plane_swap  # noqa: E402
 def qstack_frame_size(cfg, scale):
     """In-plane size of a quantile stack built at pyramid level `scale`, in its own order.
 
-    `source_size_xyz` reports (X, Y, Z) for every format, but the qstack does not: the
-    stats arrays are written (X, Y) and then transposed for everything but n5.
+    `source_size_xyz` reports (X, Y, Z) for every format; the qstack does not. The stats
+    arrays are written (X, Y) and then transposed for everything but n5.
     """
     x, y, _ = stores.source_size_xyz(cfg, scale=scale)
     return (y, x) if in_plane_order(cfg) == "yx" else (x, y)
@@ -44,11 +44,11 @@ def qstack_frame_size(cfg, scale):
 def raw_stack_mode(cfg, camera, scale=0):
     """Whether this camera is too shallow in Z for per-pixel quantiles.
 
-    Per-pixel quantiles are built from a pixel's Z-column WITHIN ONE SETUP -- merging
+    Per-pixel quantiles come from a pixel's Z-column WITHIN ONE SETUP -- merging
     `OrderStats` across setups averages their sorted buffers, it does not pool samples --
-    so a dataset with fewer than 21 Z-slices per setup has no distribution to summarise.
-    For those (e.g. single-plane 2-D acquisitions) the quantile summary is skipped
-    entirely and BaSiC is handed every sample plane instead. No stats pass runs at all.
+    so fewer than 21 Z-slices per setup leaves no distribution to summarise. Those cameras
+    (e.g. single-plane 2-D acquisitions) skip the quantile summary entirely and hand BaSiC
+    every sample plane instead. No stats pass runs at all.
     """
     setups = _config.camera_setups(cfg)[camera]
     return stores.camera_source_size_xyz(cfg, setups, scale=scale)[2] < N_QUARTILES
@@ -73,10 +73,10 @@ def read_quantile_stack(cfg, camera):
 def read_raw_stack(cfg, camera, scale=0):
     """Every one of a camera's slices as one (X, Y, Z * nsetups) array.
 
-    The `raw_stack_mode` substitute for the quantile stack: with too few Z-slices to
-    summarise, BaSiC is fed the data itself rather than statistics derived from it. The
-    whole camera is read at once with no X/Y tiling -- affordable precisely because Z is
-    under 21, which is what put us on this path.
+    The `raw_stack_mode` substitute for the quantile stack: too few Z-slices to summarise,
+    so BaSiC is fed the data rather than statistics derived from it. The whole camera is
+    read at once with no X/Y tiling -- affordable precisely because Z is under 21, which
+    is what put us on this path.
     """
     setups = _config.camera_setups(cfg)[camera]
     x, y, z = stores.camera_source_size_xyz(cfg, setups, scale=scale)
@@ -93,8 +93,8 @@ def load_qstack(cfg, camera):
     """One camera's saved qstack as an (H, W, N) float32 array in RAW COUNTS.
 
     Counts, not a normalised [0, 1] range: the flatfield is a mean-1 multiplier and so
-    scale-free either way, but the darkfield is an additive offset that has to come out
-    in the same units as the voxels the apply stage subtracts it from.
+    scale-free either way, but the darkfield is an additive offset that has to come out in
+    the same units as the voxels the apply stage subtracts it from.
     """
     path = Path(cfg["qstacks_dir"]) / f"camera{camera + 1}.tiff"
     if not path.is_file():
@@ -112,27 +112,27 @@ def unmix_empty_fraction(stack, phi, background):
     """Remove the partly-empty-tile bias from a (Y, X, N) quantile stack, in place.
 
     The stats pass merges each setup's `OrderStats` by AVERAGING their sorted buffers
-    rather than pooling samples, so a tile that is empty at a frame position contributes
-    the background level at EVERY quantile. A frame pixel empty in a fraction `phi` of
-    the tiles therefore reads
+    rather than pooling samples, so a tile empty at a frame position contributes the
+    background level at EVERY quantile. A frame pixel empty in a fraction `phi` of the
+    tiles reads
 
         q_observed[k] = phi * background[k] + (1 - phi) * q_true[k]
 
-    which inverts exactly. The bias is multiplicative in appearance -- the deficit is
-    `phi * (q_true - background)`, so it grows with quantile -- which is why BaSiC absorbs
-    it into the flat field rather than the darkfield, and why neither dropping low
-    quantiles nor supplying a ramped darkfield fixes it.
+    which inverts exactly. The bias looks multiplicative -- the deficit is `phi * (q_true
+    - background)`, so it grows with quantile -- which is why BaSiC absorbs it into the
+    flat field rather than the darkfield, and why neither dropping low quantiles nor
+    supplying a ramped darkfield fixes it.
 
-    `background` is PER QUANTILE, and that is not a refinement: a scalar is wrong. The
-    same averaging that creates the bias means an empty column's contribution is an
-    average of per-block ORDER STATISTICS, so it rises with quantile index (measured 183,
-    201, 221 counts at q000/q050/q100 on one dataset -- a third of that dataset's entire
-    signal range). Since `1/(1 - phi)` multiplies the error by 3-10x where phi is large, a
-    scalar there does more harm than no correction at all.
+    `background` is PER QUANTILE, and a scalar is not a rougher version of that but wrong.
+    The same averaging makes an empty column's contribution an average of per-block ORDER
+    STATISTICS, so it rises with quantile index -- measured 183, 201, 221 counts at
+    q000/q050/q100 on one dataset, a third of that dataset's whole signal range. Since
+    `1/(1 - phi)` multiplies the error by 3-10x where phi is large, a scalar there does
+    more harm than no correction at all.
 
     `1/(1 - phi)` diverges where a pixel is empty in nearly every tile, so `phi` is capped
     at `MAX_UNMIX_PHI`. Those pixels have almost no real signal to recover anyway; the cap
-    leaves them merely under-corrected instead of exploded.
+    leaves them under-corrected instead of exploded.
     """
     y, x, n = stack.shape
     if phi.shape != (y, x):
@@ -150,7 +150,7 @@ def unmix_empty_fraction(stack, phi, background):
 def empty_fraction_map(cfg, camera, frame_size):
     """The emptiness stage's empty-fraction map for this camera, resized to `frame_size`.
 
-    Written at a coarse pyramid level, so it is upsampled here -- fine because it varies
+    Written at a coarse pyramid level, so it is upsampled here -- fine, because it varies
     on the scale of tile overlap, not per pixel. Transposed if it arrives (X, Y): the map
     is measured on canonical (Z, Y, X) volumes while a non-zarr qstack stays (X, Y, N).
     """
@@ -194,7 +194,7 @@ def empty_fraction_map(cfg, camera, frame_size):
 def background_quantile_profile(cfg, camera, n):
     """The per-quantile background profile, summed over every stats job's partial.
 
-    None when the stats pass did not measure one, or when no job found an empty column.
+    None when the stats pass measured none, or when no job found an empty column.
     """
     d = background_quantile_dir(cfg, camera)
     if not d.is_dir():

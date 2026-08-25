@@ -4,9 +4,9 @@
 stage that corrects voxels needs them at whatever level IT reads, in canonical (Y, X), so
 that resizing and that transpose live here rather than in each caller.
 
-`basic_field_paths` and `camera_of` are NOT here -- they are in `config.py`, because
-`load_config` calls the first to auto-detect `apply_basic`, and having them here would
-make the two modules import each other.
+`basic_field_paths` and `camera_of` are NOT here but in `config.py`, because `load_config`
+calls the first to auto-detect `apply_basic` -- having them here would make the two
+modules import each other.
 """
 
 import numpy as np
@@ -27,9 +27,11 @@ from .stores import source_pyramid_shapes
 
 
 def _read_field_tiff(path):
-    """One BaSiC field as a 2-D float32 array. `save_basic_field` writes a
-    single-page Gray{Float32} TIFF, so any of these readers gives the same
-    (rows, cols) array Julia's `load` returns."""
+    """One BaSiC field as a 2-D float32 array.
+
+    `save_basic_field` writes a single-page Gray{Float32} TIFF, so any of these readers
+    gives the same (rows, cols) array Julia's `load` returns.
+    """
     try:
         import tifffile
         img = np.asarray(tifffile.imread(str(path)))
@@ -45,10 +47,11 @@ def _read_field_tiff(path):
 def _oriented_field(field, full_yx, path):
     """A field in canonical (Y, X), which is how `save_basic_field` writes it.
 
-    Stated rather than inferred from the shape, so a square tile -- where both orientations
-    "fit" -- still resolves. The transpose is accepted with a warning only when the shape
-    rules canonical out: fields from the Julia package, or from a run before these planes
-    were unified, are (X, Y) on an n5 dataset. Re-run `run_basic()` to silence it.
+    Stated rather than inferred from the shape, so a square tile -- where both
+    orientations "fit" -- still resolves. The transpose is accepted with a warning only
+    when the shape rules canonical out: fields from the Julia package, or from a run
+    before these planes were unified, are (X, Y) on an n5 dataset. Re-run `run_basic()` to
+    silence it.
     """
     return canonical_plane(field, full_yx, "yx", what=str(path))
 
@@ -56,12 +59,12 @@ def _oriented_field(field, full_yx, path):
 def _block_mean_2d(a, fy, fx, out_yx):
     """Mean-downsample a 2-D field by (fy, fx), cropped/edge-padded to `out_yx`.
 
-    `np.add.reduceat` rather than a reshape-mean so a ragged final block (when
-    the plane isn't a multiple of the factor) is averaged over its real extent
-    instead of forcing an exact division. The crop/pad then absorbs the
-    off-by-one between our ceil-division block count and whatever rounding the
-    on-disk pyramid level used -- edge padding, since a flat field's border
-    value is the best estimate for a border row that only exists on one side.
+    `np.add.reduceat` rather than a reshape-mean, so a ragged final block -- when the
+    plane is not a multiple of the factor -- is averaged over its real extent instead of
+    forcing an exact division. The crop/pad then absorbs the off-by-one between our
+    ceil-division block count and whatever rounding the on-disk pyramid level used. Edge
+    padding, since a flat field's border value is the best estimate for a border row that
+    exists on one side only.
     """
     if fy == 1 and fx == 1:
         m = a.astype("float32", copy=True)
@@ -95,10 +98,10 @@ class BasicModel:
     def correct(self, canon):
         """max((raw - dark) / flat, 0) as float32 for a canonical (Z, Y, X) block.
 
-        The (Y, X) fields broadcast over the leading Z axis. `nonneg_offset = 0`
-        plus the clamp at 0 matches `apply_correction_chunked`'s call in
-        src/BigFlatFieldIlluminator.jl, so a joint run reproduces the two-pass
-        result (up to the intermediate uint16 rounding the joint route skips).
+        The (Y, X) fields broadcast over the leading Z axis. `nonneg_offset = 0` plus the
+        clamp at 0 matches `apply_correction_chunked`'s call in
+        src/BigFlatFieldIlluminator.jl, so a joint run reproduces the two-pass result --
+        up to the intermediate uint16 rounding the joint route skips.
         """
         c = np.asarray(canon).astype("float32")
         c -= self.dark
@@ -111,14 +114,14 @@ _BASIC_CACHE = {}
 
 
 def basic_model(cfg, setup, level_yx):
-    """`BasicModel` for `setup` at a level whose in-plane shape is `level_yx`, or
-    None when `apply_basic` is off.
+    """`BasicModel` for `setup` at a level whose in-plane shape is `level_yx`, or None
+    when `apply_basic` is off.
 
-    The (fy, fx) downsample factor is derived from the level's own shape against
-    the full-res shape, so this is correct both for a prebuilt pyramid level and
-    for `open_downsampled`'s on-the-fly downsample driver (whose in-plane factor
-    is 2**stats_scale but which leaves Z alone). Cached per (camera, level shape)
-    -- the fields are per-camera, so an array job's every shard shares one.
+    The (fy, fx) downsample factor is derived from the level's own shape against the
+    full-res shape, so this is right both for a prebuilt pyramid level and for
+    `open_downsampled`'s on-the-fly downsample driver, whose in-plane factor is
+    2**stats_scale but which leaves Z alone. Cached per (camera, level shape): the fields
+    are per-camera, so every shard of an array job shares one.
     """
     if not cfg["apply_basic"]:
         return None
@@ -153,11 +156,12 @@ def basic_model(cfg, setup, level_yx):
 def _check_basic_mode(cfg, recorded, what):
     """Refuse to combine stats/target files with voxels corrected differently.
 
-    Per-tile stats (Otsu threshold, foreground mean/std) and the solved gains are
-    only meaningful for the pixel values they were measured on, so a target built
-    from raw stats must not drive a joint `apply` (or vice versa). Files written
-    before `apply_basic` existed carry no flag; they were raw-derived, so treat a
-    missing flag as False."""
+    Per-tile stats (threshold, foreground mean/std) and the solved gains are only
+    meaningful for the pixel values they were measured on, so a target built from raw
+    stats must not drive a joint `apply`, or the reverse. Files written before
+    `apply_basic` existed carry no flag; they were raw-derived, so a missing flag reads as
+    False.
+    """
     if bool(recorded) != cfg["apply_basic"]:
         raise RuntimeError(
             f"{what} was written with apply_basic={bool(recorded)} but this run has "

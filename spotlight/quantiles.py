@@ -1,19 +1,18 @@
 """Stage: the per-camera quantile statistics pass.
 
-Named `quantiles`, not `stats`, because `tilestats.py` is also a "stats" stage -- this one
+Named `quantiles`, not `stats`, because `tilestats.py` is also a "stats" stage: this one
 reduces a camera's Z-columns to order statistics for BaSiC, that one measures one tile's
 foreground for the gain solve. Pairs with `qstack.py`, which consumes what this writes.
 
-One LSF array element owns a slice of the frame's X/Y chunks. For each of them it reads
-that chunk from every setup the camera covers, reduces each setup's Z-columns to
-`OrderStats`, merges across setups and then across Z blocks, and writes 23 n5 arrays
-(`minima`, `maxima`, and `q000`..`q100` in steps of 5) under
-`{results_root}/camera{N}/{stat}/s{level}`.
+One LSF array element owns a slice of the frame's X/Y chunks. For each it reads that chunk
+from every setup the camera covers, reduces each setup's Z-columns to `OrderStats`, merges
+across setups and then across Z blocks, and writes 23 n5 arrays (`minima`, `maxima`, and
+`q000`..`q100` in steps of 5) under `{results_root}/camera{N}/{stat}/s{level}`.
 
 Where the Julia version threads over setups and loops per pixel, this reads them
 concurrently through tensorstore's async API and reduces each chunk in one vectorised
-sort. The merge is still a strict left fold in SETUP ORDER, not completion order --
-float addition is not associative, and matching Julia's order is what makes the two
+sort. The merge is still a strict left fold in SETUP ORDER, not completion order -- float
+addition is not associative, and matching Julia's order is what makes the two
 implementations comparable rather than merely close.
 """
 
@@ -44,19 +43,19 @@ BACKGROUND_PIXEL_STRIDE = 8
 def _concurrency(cfg, n_setups, bytes_per_setup):
     """How many setup reads may be in flight at once.
 
-    Sized from a MEMORY budget, not from the core count. Reads here are latency-bound,
-    not CPU-bound -- measured on an 18-setup camera over a sharded store, 9216 reads of
-    ~1 MiB moved at 49 MiB/s aggregate -- so matching concurrency to cores starves the
-    I/O. `stores._context` already reasons this way for tensorstore's own
+    Sized from a MEMORY budget, not the core count. Reads here are latency-bound, not
+    CPU-bound -- measured on an 18-setup camera over a sharded store, 9216 reads of ~1 MiB
+    moved at 49 MiB/s aggregate -- so matching concurrency to cores starves the I/O.
+    `stores._context` already reasons this way for tensorstore's own
     `file_io_concurrency`; this is the same argument one level up.
 
-    Worse, a limit below `n_setups` causes head-of-line blocking. Results must be
-    consumed in setup order (the merge is a left fold and float addition is not
-    associative), so a slot is held from the moment a task starts until its turn comes
-    round. With 8 slots and 18 setups, tasks 1..7 finish and sit on their slots while
-    task 0 is still reading, and nothing new can start. Letting every setup of one Z
-    block be in flight removes that stall, and costs little: each holds its chunk plus an
-    (X, Y, p) float64 buffer, ~7 MiB for a 64x64 tile at block size 126.
+    Worse, a limit below `n_setups` causes head-of-line blocking. Results must be consumed
+    in setup order (the merge is a left fold and float addition is not associative), so a
+    slot is held from the moment a task starts until its turn comes round. With 8 slots
+    and 18 setups, tasks 1..7 finish and sit on their slots while task 0 is still reading,
+    and nothing new can start. Letting every setup of one Z block be in flight removes
+    that stall and costs little: each holds its chunk plus an (X, Y, p) float64 buffer, ~7
+    MiB for a 64x64 tile at block size 126.
     """
     env = os.getenv("SPOTLIGHT_STATS_CONCURRENCY")
     if env:
@@ -72,7 +71,7 @@ def _z_read_blocks(cfg, z_total):
     lands on whole shards; every other format reads the column in one pass. The batches
     are CONCATENATED into the full Z-column before the quantile is taken, so -- unlike a
     block merge -- they need not be equal depth: the last is simply shorter. Concatenating
-    the samples (rather than merging per-batch order statistics) is what makes the result
+    the samples, rather than merging per-batch order statistics, is what makes the result
     a TRUE per-pixel quantile of the whole column instead of an average of per-block ones.
     """
     if cfg["input_format"] != "zarr3":
@@ -84,9 +83,9 @@ def _z_read_blocks(cfg, z_total):
 def empty_threshold(cfg, camera):
     """The dataset-wide intensity threshold separating background from specimen.
 
-    Measured by the emptiness stage and merged into every tile's own stats JSON. None
-    when that stage has not run, in which case the stats pass simply skips the
-    background-profile measurement.
+    Measured by the emptiness stage and merged into every tile's own stats JSON. None when
+    that stage has not run, in which case the stats pass skips the background-profile
+    measurement.
     """
     for setup in _config.camera_setups(cfg)[camera]:
         path = Path(cfg["results_root"]) / "intensity_stats" / f"setup{setup}.json"
@@ -105,8 +104,8 @@ class BackgroundQuantiles:
     """Running per-quantile background profile, plus the number of columns behind it.
 
     Taken from the very `OrderStats` whose average becomes the qstack plane, rather than
-    measured separately, so it cannot disagree with them about block geometry: `q000` is
-    a mean of per-block minima, not a column minimum. Measured on one dataset, a profile
+    measured separately, so it cannot disagree with them about block geometry: `q000` is a
+    mean of per-block minima, not a column minimum. Measured on one dataset, a profile
     built from full-column percentiles spanned 173..239 counts where the real one spans
     183..221 -- subtracting the former would over-correct the spread by ~1.7x.
     """
@@ -123,8 +122,8 @@ class BackgroundQuantiles:
         A column counts as empty only when its MAXIMUM is under `threshold`: nothing in it
         ever saw specimen. `threshold` must be the dataset-wide one -- a per-tile
         threshold is not comparable between tiles, and on a tile with no separable
-        background it bisects tissue, which would quietly make "background" mean "the
-        dimmer half of the specimen".
+        background it bisects tissue, quietly making "background" mean "the dimmer half of
+        the specimen".
         """
         s = BACKGROUND_PIXEL_STRIDE
         sel = st.vmax[::s, ::s] < threshold
@@ -146,10 +145,10 @@ def write_background_quantile_partial(cfg, camera, job, acc):
 
     Per job rather than per camera because the stats pass is an LSF array: each element
     owns a slice of the frame's chunks, and no single element sees enough of the frame to
-    be relied on (a job whose chunks all land on specimen finds no empty column at all).
-    `create_quartile_histograms` clears the directory when it writes a submission
-    script whose partials would not match the ones already there, so a rerun cannot
-    blend two runs' partials -- and leaves finished cameras alone when they would.
+    be relied on -- a job whose chunks all land on specimen finds no empty column at all.
+    `create_quartile_histograms` clears the directory when it writes a submission script
+    whose partials would not match the ones already there, so a rerun cannot blend two
+    runs' partials, and finished cameras are left alone when they would.
     """
     d = background_quantile_dir(cfg, camera)
     d.mkdir(parents=True, exist_ok=True)
@@ -163,7 +162,7 @@ def write_background_quantile_partial(cfg, camera, job, acc):
 
 
 async def _fit_setup(src, xs, ys, z_reads, p, sem, pool, loop, timing):
-    """Read one setup's whole Z-column for this XY chunk and reduce it. The SEMAPHORE IS
+    """Read one setup's whole Z-column for this XY chunk and reduce it. THE SEMAPHORE IS
     NOT RELEASED HERE.
 
     The caller releases it after consuming the result, so at most `limit` finished-but-

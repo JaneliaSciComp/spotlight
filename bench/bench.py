@@ -26,8 +26,8 @@ JULIA = os.environ.get("SPOTLIGHT_JULIA", "julia")
 def _maxrss_bytes():
     """Peak RSS of this process AND its children.
 
-    Children matter: the julia arm runs as a subprocess, so RUSAGE_SELF alone would
-    report the harness rather than the thing being measured. Linux reports kilobytes.
+    Children matter: the julia arm runs as a subprocess, so RUSAGE_SELF alone would report
+    the harness rather than the thing being measured. Linux reports kilobytes.
     """
     self_ = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     kids = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
@@ -53,8 +53,8 @@ def _geometry(stage, target):
 def _isolated_workdir(stage, arm):
     """A working directory whose config writes somewhere only this arm writes.
 
-    Every element of the `correct` array corrects the SAME setup, which is the point --
-    that is what makes the arms comparable. But they would then all write the same output
+    Every element of the `correct` array corrects the SAME setup -- that is the point, and
+    it is what makes the arms comparable. But they would then all write the same output
     store, and concurrent writers to one sharded zarr race on the shard lock files
     ("Failed to rename ...__lock"), failing the job and invalidating the timing.
 

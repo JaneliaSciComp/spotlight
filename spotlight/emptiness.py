@@ -66,12 +66,12 @@ EMPTY_OCCUPANCY_FLOOR = 0.02
 
 def _basic_input_cfg(cfg):
     """`cfg` with the input redirected to `input_basic_path`, so the reader helpers
-    (`_input_location` and friends, which resolve against `input_intensity_path`) read
-    the RAW store the BaSiC fit itself consumes.
+    (`_input_location` and friends, which resolve against `input_intensity_path`) read the
+    RAW store the BaSiC fit itself consumes.
 
-    Deliberately the raw store, not a corrected one: choosing the fit set from
-    BaSiC-corrected data would pick tiles using a field derived from the very tiles
-    being judged."""
+    Deliberately the raw store: choosing the fit set from BaSiC-corrected data would pick
+    tiles using a field derived from the very tiles being judged.
+    """
     out = dict(cfg)
     basic = cfg.get("input_basic_path", "").replace("$HOME", os.path.expanduser("~"))
     out["input_intensity_path"] = basic or cfg["input_intensity_path"]
@@ -82,9 +82,10 @@ def _select_level(cfg, setup, min_frame=96):
     """Coarsest input pyramid level whose frame is still at least `min_frame` across.
 
     Empty area is a coarse, whole-frame property, so there is no reason to read full
-    resolution -- but the frame must stay big enough that a empty region spans many
-    pixels. Verified on RID19 s15 that levels 3 and 4 (288 and 144 across) give the
-    same verdict."""
+    resolution -- but the frame must stay big enough for an empty region to span many
+    pixels. Verified on RID19 s15 that levels 3 and 4 (288 and 144 across) give the same
+    verdict.
+    """
     shapes = source_pyramid_shapes(cfg, setup)
     if not shapes:
         return 0
@@ -98,9 +99,10 @@ def _select_level(cfg, setup, min_frame=96):
 def _read_tile(cfg, setup, level):
     """One tile as a canonical (Z, Y, X) array at an existing pyramid `level`.
 
-    Opens the level directly rather than going through `open_downsampled`, which is
-    pinned to `stats_scale` and falls back to wrapping level 0 in a downsample driver
-    -- that would read full resolution to answer a coarse question."""
+    Opens the level directly rather than going through `open_downsampled`, which is pinned
+    to `stats_scale` and falls back to wrapping level 0 in a downsample driver -- reading
+    full resolution to answer a coarse question.
+    """
     path, order = _input_location(cfg, setup, level)
     arr = ts.open({
         "driver": _SPEC[cfg["input_format"]]["driver"],
@@ -113,11 +115,11 @@ def _emptiness_workers(n_tiles):
     """Thread count for the two `_empty_areas` read passes.
 
     `LSB_DJOB_NUMPROC` like the other stages, but with a smaller default and no
-    `config.stage_cores` to draw it from: unlike `stats` and `apply`, this stage has no bsub
-    script of its own -- it is normally launched by Julia's `measure_emptiness()` on whatever
-    node the user is sitting on -- so the variable is usually absent and the default is what
-    actually runs. `slots` clamps it to the machine. Capped at the tile count too, because a
-    thread per tile is the most that can help.
+    `config.stage_cores` to draw it from: unlike `stats` and `apply` this stage has no
+    bsub script of its own -- it is normally launched by `measure_emptiness()` on whatever
+    node the user is sitting on -- so the variable is usually absent and the default is
+    what actually runs. `slots` clamps it to the machine, and the tile count caps it,
+    since a thread per tile is the most that can help.
     """
     n = slots(16)
     return max(1, min(n, n_tiles))
@@ -125,27 +127,26 @@ def _emptiness_workers(n_tiles):
 
 def _empty_areas(cfg, setups):
     """`(empty, threshold, level)` -- per-setup fraction of the CAMERA FRAME that is
-    effectively never occupied by specimen, plus the dataset-wide intensity threshold
-    and pyramid level used.
+    effectively never occupied by specimen, plus the dataset-wide intensity threshold and
+    pyramid level used.
 
     Why this statistic, and not a per-tile foreground fraction:
 
-      * The bias being removed comes from emptiness that is STRUCTURED IN THE CAMERA
-        FRAME. A tile uniformly 50% empty (sparse labelling everywhere) does not skew
-        any frame pixel's quantiles; a tile empty across its upper y skews exactly the
-        pixels in that band. So the thing to measure is how much of the frame a tile
-        never illuminates -- not how much signal it holds.
-      * The threshold is GLOBAL, from a pooled subsample across all tiles. A per-tile
-        Otsu threshold (as `_compute_stats` computes, for its own different purpose) is
-        not comparable between tiles: on a tile with no separable background it bisects
-        *tissue*, so its "foreground fraction" is an arbitrary within-tissue split. On
-        RID19 s15 that made the per-tile number rank partly-empty tiles as the FULLEST
-        ones -- exactly backwards.
-      * Tile occupancy also varies smoothly across a mosaic (s15 ranges 0.36 to 0.89
-        top row to bottom), so there is no two-population structure to cluster on;
-        attempts to find a boundary in it correctly report none. Empty area does not
-        inherit that gradient, because "is any part of the frame unused" is a different
-        question from "how much signal is there".
+      * The bias being removed comes from emptiness that is STRUCTURED IN THE CAMERA FRAME.
+        A tile uniformly 50% empty (sparse labelling everywhere) skews no frame pixel's
+        quantiles; a tile empty across its upper y skews exactly the pixels in that band. So
+        the thing to measure is how much of the frame a tile never illuminates, not how much
+        signal it holds.
+      * The threshold is GLOBAL, from a pooled subsample across all tiles. A per-tile Otsu
+        threshold (as `_compute_stats` computes, for its own different purpose) is not
+        comparable between tiles: on a tile with no separable background it bisects *tissue*,
+        making its "foreground fraction" an arbitrary within-tissue split. On RID19 s15 that
+        ranked partly-empty tiles as the FULLEST ones -- exactly backwards.
+      * Tile occupancy also varies smoothly across a mosaic (s15 ranges 0.36 to 0.89, top row
+        to bottom), so there is no two-population structure to cluster on, and attempts to
+        find a boundary in it correctly report none. Empty area does not inherit that
+        gradient: "is any part of the frame unused" is a different question from "how much
+        signal is there".
     """
     level = _select_level(cfg, setups[0])
     workers = _emptiness_workers(len(setups))
@@ -249,21 +250,22 @@ def _empty_areas(cfg, setups):
 def _background_level(bg_sum, bg_cnt, percentile=BACKGROUND_PERCENTILE):
     """The dataset's additive background level in counts, or None if nothing observed it.
 
-    Taken as the BACKGROUND_PERCENTILE of the per-frame-pixel background means, not
-    their mean. The measurement is contaminated one-sidedly: a frame pixel counts as
-    empty if under EMPTY_OCCUPANCY_FLOOR of its column clears the threshold, so pixels
-    near the specimen still admit dim tissue and scattered light, which only ever pushes
-    the value UP. Measured on RID19 s15 that contamination rises steadily with y --
-    124 counts at the top of the frame where the specimen is absent, ~180 at the deepest
-    rows that still qualify -- so the mean (137) over-estimates while a low percentile
-    (121) tracks the uncontaminated top. A low percentile also keeps the corrected
-    background positive: subtracting 137 drove it to -6..-9 counts, which then clips.
+    Taken as the BACKGROUND_PERCENTILE of the per-frame-pixel background means, not their
+    mean. The measurement is contaminated one-sidedly: a frame pixel counts as empty if
+    under EMPTY_OCCUPANCY_FLOOR of its column clears the threshold, so pixels near the
+    specimen still admit dim tissue and scattered light, which only ever pushes the value
+    UP. On RID19 s15 that contamination rises steadily with y -- 124 counts at the top of
+    the frame where the specimen is absent, ~180 at the deepest rows that still qualify --
+    so the mean (137) over-estimates while a low percentile (121) tracks the
+    uncontaminated top. A low percentile also keeps the corrected background positive:
+    subtracting 137 drove it to -6..-9 counts, which then clips.
 
     Not a per-pixel map: only ~46% of the frame is ever empty in any tile, so there is
-    nothing to measure over the rest, and the apparent y-gradient is the specimen
-    arriving rather than the offset changing -- extrapolating it would subtract signal
-    as if it were offset. A no-illumination dark acquisition is the only way to get
-    honest full-frame structure."""
+    nothing to measure over the rest, and the apparent y-gradient is the specimen arriving
+    rather than the offset changing -- extrapolating it would subtract signal as if it
+    were offset. A no-illumination dark acquisition is the only honest source of
+    full-frame structure.
+    """
     if bg_sum is None or bg_cnt is None:
         return None
     seen = bg_cnt > 0
@@ -277,30 +279,25 @@ def _write_empty_fraction(path, phi):
     """Write the per-frame-pixel empty fraction as a float32 TIFF for `save_qstack`.
 
     `phi` is measured on canonical (Z, Y, X) volumes, so it arrives (Y, X) and is written
-    exactly so -- like every other plane beside a camera. `empty_fraction_map` swaps it into
+    exactly so, like every other plane beside a camera. `empty_fraction_map` swaps it into
     the qstack's order on read.
 
-    This is the map that lets the emptiness bias be REMOVED rather than avoided.
-    `mstat_by_chunk` merges per-setup `OrderStats` by averaging their sorted buffers,
-    so a tile that is empty at a frame position contributes the background level at
-    EVERY quantile, and the pooled stack reads
-
-        q_observed[k] = phi*bg[k] + (1 - phi)*q_true[k]
-
-    which inverts exactly. Note `bg[k]`, not a scalar: the same averaging makes an empty
-    column's contribution a mean of per-block ORDER STATISTICS, so it rises with quantile
-    index. That profile is measured on the Julia side (`_accumulate_background_quantiles!`)
-    because its width depends on the stats pass's block geometry; this stage supplies only
-    phi and the scalar offset. Subsetting avoids the bias by discarding tiles; un-mixing
-    removes it while keeping them, and keeps the darkfield's evidence in the fit.
+    This is the map that lets the emptiness bias be REMOVED rather than avoided:
+    subsetting avoids it by discarding tiles, un-mixing removes it while keeping them, and
+    keeps the darkfield's evidence in the fit. `qstack.unmix_empty_fraction` carries the
+    inversion and why the background term is per-quantile rather than scalar. The profile
+    itself is measured on the Julia side (`_accumulate_background_quantiles!`), because
+    its width depends on the stats pass's block geometry; this stage supplies only phi and
+    the scalar offset.
 
     Only phi's VARIATION across the frame can bias a flat field, so a mosaic whose
     emptiness is spatially uniform once pooled has nothing here to correct.
 
-    Written at the coarse pyramid level the measurement ran at; `save_qstack` upsamples
-    it to the qstack's frame size. That is fine because phi varies on the scale of tile
-    overlap, not per pixel -- and unlike the background profile, occupancy survives
-    downsampling, which is why the two are measured at different levels."""
+    Written at the coarse pyramid level the measurement ran at; `save_qstack` upsamples it
+    to the qstack's frame size. Fine, because phi varies on the scale of tile overlap, not
+    per pixel -- and unlike the background profile, occupancy survives downsampling, which
+    is why the two are measured at different levels.
+    """
     try:
         write_plane_tiff(path, phi)
     except ImportError:
@@ -316,12 +313,11 @@ def cmd_emptiness(cfg):
     Writes, per camera:
 
       * `empty_area` and `background_level` into each tile's own
-        `intensity_stats/setup{N}.json`, merged with whatever the `stats` stage has
-        already put there. `_classify` reads `empty_area` straight out of the stats it
-        already loads, and Julia reads `background_level` for the darkfield override and
-        the qstack un-mixing.
-      * `camera{N}/empty_fraction.tif` -- the per-frame-pixel empty fraction, used
-        by `save_qstack` to un-mix the quantile stack (`unmix_empty_fraction!`).
+        `intensity_stats/setup{N}.json`, merged with whatever the `stats` stage already put
+        there. `_classify` reads `empty_area` straight out of the stats it already loads, and
+        Julia reads `background_level` for the darkfield override and the qstack un-mixing.
+      * `camera{N}/empty_fraction.tif` -- the per-frame-pixel empty fraction, used by
+        `save_qstack` to un-mix the quantile stack (`unmix_empty_fraction!`).
 
     Must run BEFORE the `stats` stage's results are needed and before the BaSiC quantile
     pass, since both consume its output; `_merge_tile_stats` is what makes that ordering
