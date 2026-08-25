@@ -12,6 +12,7 @@ there.
 
 import json
 import os
+import shlex
 import shutil
 import sys
 from pathlib import Path
@@ -114,8 +115,11 @@ def _bsub(cfg, name, cores, out_suffix, command, array=None, n_arrays=1):
     index = "_%I" if array else ""
     return (f'bsub -J "{job}"'
             f" -n {cores} -P {cfg['lsf_project']}{_watchdog(cfg)}"
-            f" -o {cfg['output_stem']}_{out_suffix}{index}.txt"
-            f" -e {cfg['error_stem']}_{out_suffix}{index}.txt"
+            # Quoted: an experiment directory can contain `(`, spaces, `&` -- shell
+            # metacharacters that make the generated script a syntax error. `%I` is
+            # substituted by LSF, not the shell, so single-quoting it costs nothing.
+            f" -o {shlex.quote(cfg['output_stem'] + f'_{out_suffix}{index}.txt')}"
+            f" -e {shlex.quote(cfg['error_stem'] + f'_{out_suffix}{index}.txt')}"
             f" '{command}'")
 
 
