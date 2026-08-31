@@ -7,6 +7,16 @@ of one per pipeline.
 The scripts are written to the CURRENT WORKING DIRECTORY, and every stage re-reads
 `LocalPreferences.toml` from its own job's working directory at run time. So the LSF job's
 working directory has to be the one the scripts were generated from; run them from there.
+
+Two shapes, same stages:
+
+* `write_pipeline_script` -- ONE script for a whole pipeline, every stage chained on the
+  previous stage's LSF job ids. `python -m spotlight run both --cluster`, then run it once
+  and walk away. This is the one to use.
+* the per-stage generators (`create_quartile_histograms`, `write_correction_script`,
+  `create_intensity_correction_script`) -- one script per stage, submitted by hand in
+  order. Still here because they are how you rerun a single stage without regenerating a
+  chain, and because the chained script is a driver over exactly these lines.
 """
 
 import json
@@ -23,7 +33,7 @@ from . import qstack as _qstack
 __all__ = [
     "create_quartile_histograms", "write_correction_script",
     "create_intensity_correction_script", "measure_emptiness", "ensure_emptiness",
-    "emptiness_is_measured", "ensure_log_dirs", "runner",
+    "emptiness_is_measured", "ensure_log_dirs", "runner", "write_pipeline_script",
 ]
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -93,28 +103,58 @@ def ensure_log_dirs(cfg):
 REQUEUE_EXIT_CODES = "140"
 
 
-def _watchdog(cfg):
+# `qstack` and `basic` each process a whole camera in one element rather than one chunk
+# range or one tile, so a run limit tuned against the apply stage -- 60 min against a 209 s
+# worst case, ~17x -- can be SHORTER than a healthy run instead of a multiple of it. Both
+# were run by hand until the chained script existed, so neither has ever been measured
+# under LSF; until they are, they get a multiple of whatever the operator set.
+#
+# The asymmetry is deliberate. Overshooting costs a wedged host a few idle hours.
+# Undershooting costs an infinite requeue loop: `-Q 140` has no job-level retry cap (see
+# CLAUDE.md, MAX_JOB_REQUEUE is a queue setting), so an element that legitimately exceeds
+# `-W` is killed and resubmitted forever -- and in a chained run nothing downstream of it
+# ever starts.
+WHOLE_CAMERA_RUNLIMIT = 8
+
+
+def _watchdog(cfg, factor=1):
     """The ` -W <minutes> -Q "140"` suffix: kill a wedged element, then requeue it.
 
     An element that blocks on a wedged NFS mount does not fail -- it holds its slots until
     someone notices. `-W` is the only thing that bounds that, and `-Q` is what turns the
     kill into another attempt instead of a hole in the output. Each is pointless without
     the other: `-W` alone loses the tile, `-Q` alone never fires.
+
+    `factor` scales the limit for a stage whose element is much larger than the one the
+    config value was set against; see `WHOLE_CAMERA_RUNLIMIT`.
     """
     minutes = int(cfg.get("lsf_runlimit_minutes", _config.DEFAULTS["lsf_runlimit_minutes"]))
+    minutes *= factor
     return f" -W {minutes} -Q \"{REQUEUE_EXIT_CODES}\"" if minutes > 0 else ""
 
 
-def _bsub(cfg, name, cores, out_suffix, command, array=None, n_arrays=1):
+def _bsub(cfg, name, cores, out_suffix, command, array=None, n_arrays=1, dep=None,
+          submit="bsub", runlimit=1):
     """`array` is the element COUNT (the array is always 1-N), or None for a single job.
 
     `n_arrays` is how many such arrays the generated script submits together, so the core
     budget is split between them rather than handed to each.
+
+    `dep` is a `bsub -w` expression -- `done(<id>) && ...` -- and `submit` names the
+    command the line starts with, so the chained pipeline script can route it through its
+    own `jsub` wrapper. `runlimit` scales `-W` (see `WHOLE_CAMERA_RUNLIMIT`). All three
+    default to the standalone scripts' behaviour.
     """
     job = f"{name}[1-{array}]{_throttle(cfg, cores, array, n_arrays)}" if array else name
     index = "_%I" if array else ""
-    return (f'bsub -J "{job}"'
-            f" -n {cores} -P {cfg['lsf_project']}{_watchdog(cfg)}"
+    # DOUBLE quotes, deliberately, and so not `shlex.quote`: the expression holds `&&` and
+    # parentheses, which need quoting, but also `$J_STATS_0`, which the shell has to
+    # expand -- single quotes would submit the literal string and LSF would wait on a
+    # dependency that can never be satisfied. Safe because the only thing that ever
+    # reaches `dep` is `_dep()`'s own generated variable names.
+    wait = f' -w "{dep}"' if dep else ""
+    return (f'{submit} -J "{job}"{wait}'
+            f" -n {cores} -P {cfg['lsf_project']}{_watchdog(cfg, runlimit)}"
             # Quoted: an experiment directory can contain `(`, spaces, `&` -- shell
             # metacharacters that make the generated script a syntax error. `%I` is
             # substituted by LSF, not the shell, so single-quoting it costs nothing.
@@ -204,7 +244,32 @@ def create_quartile_histograms(cfg=None):
     cfg = _config.load_config() if cfg is None else cfg
     ensure_log_dirs(cfg)
     ensure_emptiness(cfg)
+    cameras, num_jobs, per_job = _stats_prep(cfg)
+    if not cameras:
+        return
+    lines = [_stats_line(cfg, c, num_jobs, per_job, len(cameras)) for c in cameras]
+    _write("bsub_command.sh", "\n".join(lines) + "\n")
 
+
+def _stats_line(cfg, camera, num_jobs, per_job, n_cameras, dep=None, submit="bsub"):
+    """One camera's quantile-stats array job; each element covers `per_job` chunks."""
+    cmd = (f"{runner()} stats {camera}"
+           f" $((($LSB_JOBINDEX-1)*{per_job}+1)) $(($LSB_JOBINDEX*{per_job}))")
+    return _bsub(cfg, "spotlight-stats", cfg["n_cores_stats"], f"qstack_{camera + 1}",
+                 cmd, array=num_jobs, n_arrays=n_cameras, dep=dep, submit=submit)
+
+
+def _stats_prep(cfg):
+    """Everything the quantile stats pass needs on disk before its array goes out.
+
+    Shared by `create_quartile_histograms` and `write_pipeline_script`. Neither half is
+    optional -- clearing stale partials and pre-creating the statistic arrays are both
+    races that silently corrupt a camera's finished work, see the comments below -- and a
+    second copy of them would drift.
+
+    Returns `(cameras, num_jobs, per_job)`; `cameras` is empty when every camera is too
+    shallow in Z to have quantiles at all.
+    """
     lvl = cfg["basic_stats_level"]
     # Sized at basic_stats_level, matching the stats pass: a coarser level has a smaller
     # frame, hence fewer X/Y chunks and fewer array elements. The two must agree, or the
@@ -222,18 +287,11 @@ def create_quartile_histograms(cfg=None):
     if not cameras:
         print(f"warning: every camera is too shallow in Z for quantiles; no stats jobs "
               "needed. Run save_qstack() then run_basic() directly.")
-        return
+        return [], 0, per_job
     if len(cameras) < n_cam:
         skipped = sorted(set(range(n_cam)) - set(cameras))
         print(f"warning: skipping cameras too shallow in Z for quantiles: "
               f"{[c + 1 for c in skipped]}")
-
-    lines = []
-    for c in cameras:
-        cmd = (f"{runner()} stats {c}"
-               f" $((($LSB_JOBINDEX-1)*{per_job}+1)) $(($LSB_JOBINDEX*{per_job}))")
-        lines.append(_bsub(cfg, "spotlight-stats", cfg["n_cores_stats"], f"qstack_{c + 1}",
-                           cmd, array=num_jobs, n_arrays=len(cameras)))
 
     # Clear a camera's background-quantile partials only when THIS run would not reproduce
     # them. They are summed blind, so a partial from a different tiling or a different setup
@@ -304,10 +362,9 @@ def create_quartile_histograms(cfg=None):
             stores.open_stats_array(cfg, c, name, size_xy, scale=lvl, ctx=ctx,
                                     rebuild=broken)
     print(f"{len(cameras)} camera(s) x {len(stat_names)} statistic array(s) ready")
-
-    _write("bsub_command.sh", "\n".join(lines) + "\n")
     print(f"{num_jobs} job(s) x {len(cameras)} camera(s), {n_chunks} chunks, "
           f"level {lvl}, frame {size_xy}")
+    return cameras, num_jobs, per_job
 
 
 def write_correction_script(cfg=None, mode="basic"):
@@ -333,7 +390,8 @@ def create_intensity_correction_script(cfg=None):
 
     Run them in order, waiting for each stage's jobs to finish before submitting the next:
     there is no `-w` dependency between them, since LSF name-based dependencies proved
-    unreliable here.
+    unreliable here. `write_pipeline_script` is the version that does the waiting for you,
+    chaining on job IDS instead of names -- prefer it unless you are rerunning one stage.
 
     1. `bsub_int_stats.sh`     -- per-tile foreground mean/std behind a background mask
     2. `bsub_int_aggregate.sh` -- one job: solves per-tile gains from overlapping pairs,
@@ -363,3 +421,178 @@ def create_intensity_correction_script(cfg=None):
         else:
             line = _bsub(cfg, name, cores, suffix, f"{runner()} int-{stage}")
         _write(f"bsub_int_{script}.sh", line + "\n")
+
+
+# ─── the whole pipeline as one chained submission ─────────────────────────────
+
+# The wrapper every stage of the chained script submits through. `bsub` writes
+# "Job <12345> is submitted to queue <normal>." to stdout, so the id goes to stdout and
+# LSF's own line to stderr -- `V=$(jsub ...)` then captures the id alone while the
+# operator still sees the message.
+#
+# The `exit 1` on an id that will not parse is load-bearing. An empty variable turns the
+# next stage's `-w "done()"` into an expression LSF accepts and never satisfies, so a
+# single failed submission would silently detach every stage after it. Stopping at the
+# first bad one is the only way that surfaces at submit time.
+_JSUB = '''jsub() {
+  local out id
+  out=$(bsub "$@") || { printf '%s\\n' "$out" >&2; exit 1; }
+  printf '%s\\n' "$out" >&2
+  id=${out#Job <}; id=${id%%>*}
+  case "$id" in
+    ''|*[!0-9]*) printf 'spotlight: no job id in bsub output: %s\\n' "$out" >&2; exit 1 ;;
+  esac
+  printf '%s' "$id"
+}'''
+
+
+def _dep(ids):
+    """The `bsub -w` expression waiting on every job id in `ids`, or None for none."""
+    return " && ".join(f"done(${v})" for v in ids) or None
+
+
+def _stage_jobs(cfg, stage, mode, apply_basic, dep):
+    """`(bsub lines, shell variable names)` for one pipeline stage.
+
+    `dep` is the `-w` expression this stage waits on. A stage that submits nothing returns
+    no variable names, and the caller carries the previous stage's ids forward across it so
+    the chain stays connected.
+
+    The job names and log suffixes are the same ones the standalone scripts use, so the
+    log-scraping recipes in CLAUDE.md (`output/_ic_*.txt`) keep working.
+    """
+    sub = {"dep": dep, "submit": "jsub"}
+    # Only int-stats and int-aggregate read the flag; `correct` sets its own from --mode.
+    # Stated in the environment rather than detected per job -- see the SPOTLIGHT_APPLY_BASIC
+    # comment in config._load_toml_config for what detection gets wrong here.
+    env = f"SPOTLIGHT_APPLY_BASIC={int(apply_basic)} "
+
+    if stage == "emptiness":
+        # Measured at generation time, not submitted. `_stats_prep`'s fingerprint -- which
+        # decides whether a camera's finished partials survive -- is computed HERE and reads
+        # `empty_threshold`, so the measurement has to be on disk before anything goes out.
+        # `ensure_emptiness` skips the rescan when it already is.
+        return [], []
+    if stage == "stats":
+        cameras, num_jobs, per_job = _stats_prep(cfg)
+        return ([_stats_line(cfg, c, num_jobs, per_job, len(cameras), **sub)
+                 for c in cameras],
+                [f"J_STATS_{c}" for c in cameras])
+    if stage == "qstack":
+        return ([_bsub(cfg, "spotlight-qstack", cfg["n_cores_qstack"], "qs",
+                       f"{runner()} qstack", runlimit=WHOLE_CAMERA_RUNLIMIT, **sub)],
+                ["J_QSTACK"])
+    if stage == "basic":
+        # One element per camera: the fits are independent, and the SVD is the slow part.
+        n = _config.num_cameras(cfg)
+        return ([_bsub(cfg, "spotlight-basic", cfg["n_cores_basic_fit"], "bf",
+                       f"{runner()} basic $(($LSB_JOBINDEX-1))", array=n,
+                       runlimit=WHOLE_CAMERA_RUNLIMIT, **sub)],
+                ["J_BASIC"])
+    if stage == "int-stats":
+        n, prefix, arg = _setup_selector(cfg)
+        return ([_bsub(cfg, "spotlight-int-stats", cfg["n_cores_int_stats"], "is",
+                       f"{prefix}{env}{runner()} int-stats {arg}", array=n, **sub)],
+                ["J_INT_STATS"])
+    if stage == "int-aggregate":
+        return ([_bsub(cfg, "spotlight-int-aggregate", cfg["n_cores_int_aggregate"], "ia",
+                       f"{env}{runner()} int-aggregate", **sub)],
+                ["J_INT_AGGREGATE"])
+    if stage == "correct":
+        n, prefix, arg = _setup_selector(cfg)
+        name, suffix = (("spotlight-correct", "correct") if mode == "basic"
+                        else ("spotlight-int-correct", "ic"))
+        return ([_bsub(cfg, name, _config.stage_cores(cfg, mode), suffix,
+                       f"{prefix}{runner()} correct {arg} --mode {mode}", array=n, **sub)],
+                ["J_CORRECT"])
+    raise ValueError(f"unknown stage {stage!r}")
+
+
+def write_pipeline_script(cfg=None, pipeline="both", start_at=None, stop_after=None):
+    """Write one script that submits a whole pipeline, chained on LSF job ids.
+
+    The same stage list `local.run_pipeline` walks in one process, submitted instead: each
+    stage waits on the previous stage's ids with `bsub -w done(<id>)`, so the operator runs
+    one script and LSF does all the waiting. Job IDS and not job names -- name-based
+    dependencies proved unreliable here, which is why the three intensity scripts were
+    separate files with "wait for each stage to finish" in the docstring.
+
+    `done()` rather than `ended()` on purpose. A stage that starts on a partial previous
+    stage does not fail, it produces a quietly wrong answer: `int-aggregate` will solve a
+    target from 195 of 196 tiles and report `n_present` without complaint. The price is
+    that a genuinely failed element leaves everything downstream in PEND with "Dependency
+    condition never satisfied" -- visible in `bjobs -l`, and the script's own trailer says
+    so. It is a one-word edit in the generated file for anyone who wants the other trade.
+    """
+    from . import local
+    if pipeline == "spotfix":
+        raise SystemExit("spotfix is local-only and takes the tiles to repair: "
+                         "python -m spotlight run spotfix 126 158")
+    cfg = _config.load_config() if cfg is None else cfg
+    # Imported rather than restated: `PIPELINES` is the one definition of stage order, and
+    # `_plan`/`_CORRECT_MODE`/`apply_basic_for` are what make a cluster run and a local run
+    # of the same pipeline name mean the same thing.
+    stages = local._plan(pipeline, start_at, stop_after)
+    mode = local._CORRECT_MODE[pipeline]
+    apply_basic = local.apply_basic_for(pipeline)
+
+    ensure_log_dirs(cfg)
+    ensure_emptiness(cfg)
+
+    out = [
+        "#!/bin/bash",
+        f"# The spotlight `{pipeline}` pipeline as one chained LSF submission:",
+        f"#     {' -> '.join(stages)}",
+        "#",
+        "# `emptiness`, if listed, is not submitted -- it was measured when this script was",
+        "# generated, because the stats pass needs its threshold to decide which partials to",
+        "# keep. Everything else below is a job.",
+        "#",
+        f"# Generated by `python -m spotlight run {pipeline} --cluster`. Every path in here",
+        "# is absolute and baked in, so regenerate after editing LocalPreferences.toml,",
+        "# changing the tile set, or moving the checkout. Re-running submits the whole chain",
+        "# again -- it is not idempotent.",
+        "#",
+        "# Each stage waits on the previous stage's job ids. If one element fails, the",
+        "# stages after it stay PEND rather than running on partial input:",
+        "#     bjobs -l <id> | grep -i depend     # 'Dependency condition never satisfied'",
+        "# Fix the cause, bkill the parked jobs, and rerun with --start-at <stage>.",
+        "set -eu",
+        "",
+        # Baked in rather than left to the caller: every stage re-reads
+        # LocalPreferences.toml from its own job's working directory, LSF hands a job the
+        # submitting shell's cwd, and the failure when that is wrong is a `tomllib` parse
+        # error in 196 elements at once.
+        f"cd {shlex.quote(str(Path.cwd()))} || exit 1",
+        "",
+        _JSUB,
+        "",
+    ]
+
+    prev, summary = [], []
+    for stage in stages:
+        lines, ids = _stage_jobs(cfg, stage, mode, apply_basic, _dep(prev))
+        if not lines:
+            continue                      # emptiness, or a stats pass with no camera
+        out.append(f"# ─── {stage} " + "─" * max(0, 60 - len(stage)))
+        out.append(f'echo "spotlight: submitting {stage}" >&2')
+        out += [f"{var}=$({line})" for var, line in zip(ids, lines)]
+        out.append("")
+        summary.append((stage, ids))
+        prev = ids
+
+    if not prev:
+        raise SystemExit(f"the {pipeline} pipeline has no cluster stages to submit")
+
+    every = [v for _, ids in summary for v in ids]
+    out += ['echo "" >&2',
+            f'echo "spotlight: submitted {pipeline} -- {len(every)} job(s)" >&2']
+    out += [f'echo "  {stage:<14} {" ".join(f"${v}" for v in ids)}" >&2'
+            for stage, ids in summary]
+    out += ['echo "  watch   bjobs -A -J \'spotlight-*\'" >&2',
+            f'echo "  cancel  bkill {" ".join(f"${v}" for v in every)}" >&2']
+
+    path = f"bsub_pipeline_{pipeline}.sh"
+    _write(path, "\n".join(out) + "\n")
+    print(f"apply_basic={apply_basic} for int-stats/int-aggregate; correct --mode {mode}")
+    print(f"run it once, from this directory:  ./{path}")

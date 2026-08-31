@@ -70,12 +70,22 @@ def main(argv=None):
                         "`qstack` and `basic`")
     p.add_argument("--dry-run", action="store_true",
                    help="list the stages and units without running them")
+    p.add_argument("--cluster", action="store_true",
+                   help="write one chained bsub script for this pipeline instead of "
+                        "running it here. Nothing is submitted until you run that script, "
+                        "so it is its own dry run; --dry-run does not apply")
 
     args = parser.parse_args(argv)
 
     from . import config
 
     if args.stage == "run":
+        # Same pipeline names either way: `--cluster` only changes who walks the stages.
+        if args.cluster:
+            from . import scripts
+            scripts.write_pipeline_script(config.load_config(), args.pipeline,
+                                          args.start_at, args.stop_after)
+            return
         from . import local
         local.run_pipeline(config.load_config(), args.pipeline, args.start_at,
                            args.stop_after, args.dry_run, args.tiles)

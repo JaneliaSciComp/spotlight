@@ -63,6 +63,14 @@ DEFAULTS = {
     "n_cores_int_stats": 1,
     "n_cores_int_aggregate": 5,
     "n_cores_int_correct": 20,
+    # Only the chained cluster script (`run <pipeline> --cluster`) submits these two;
+    # before it they were run by hand, so neither has ever been measured under LSF. They
+    # are one job each per camera, not per tile, so a generous reservation is cheap and a
+    # wrong one costs a single element. `basic_fit` is the BaSiC SVD -- the one stage where
+    # BLAS threads are runnable rather than sleeping (CLAUDE.md) -- and `qstack` is TIFF
+    # assembly, mostly I/O.
+    "n_cores_qstack": 4,
+    "n_cores_basic_fit": 8,
     "chunks_per_job": 64,
     "max_concurrent_cores": 2000,
     "z_batch": 1,
@@ -377,7 +385,20 @@ def _load_toml_config(require_intensity_io=True):
     # rewritten once rather than twice. Set `apply_basic = false` in the toml to
     # run intensity-only (e.g. when input_intensity_path already points at a
     # Julia apply_correction() output, which is flat/dark-corrected already).
-    if "apply_basic" not in cfg:
+    #
+    # SPOTLIGHT_APPLY_BASIC wins over both, and is how a chained cluster run states the
+    # answer instead of letting each job guess. `local.run_pipeline` overrides the flag
+    # in-process from the pipeline NAME (`apply_basic_for`), because auto-detection asks
+    # the wrong question for a pipeline; on the cluster the stages are separate processes,
+    # so the same override has to travel in the environment. Without it, `--cluster
+    # intensity` on an experiment with leftover fields detects True, measures every tile
+    # from flat-fielded voxels, and only fails hours later in `correct`'s
+    # `_check_basic_mode`. The env var is set on the two stages that read the flag
+    # (int-stats, int-aggregate); `correct` sets its own from `--mode`.
+    env = os.environ.get("SPOTLIGHT_APPLY_BASIC")
+    if env is not None:
+        cfg["apply_basic"] = env.strip().lower() not in ("", "0", "false", "no")
+    elif "apply_basic" not in cfg:
         cfg["apply_basic"] = all(p.exists() for p in basic_field_paths(cfg, 0))
     cfg["apply_basic"] = bool(cfg["apply_basic"])
     return cfg

@@ -113,6 +113,90 @@ arena and freed memory stays resident. Stats stage, both arms on one host: peak 
 vs 227 s). Must be in the environment ahead of the process — glibc reads it when it creates
 the first arena, long before `__main__`.
 
+## One script for a cluster run: `run <pipeline> --cluster`
+
+`python -m spotlight run both --cluster` writes `bsub_pipeline_both.sh`, which submits every
+stage and chains each on the previous stage's **job ids**. One `bsub` per stage, run once,
+walk away. The three-scripts-and-wait workflow is still there for rerunning a single stage.
+
+`local.PIPELINES` is the shared definition — `write_pipeline_script` imports `_plan`,
+`_CORRECT_MODE` and `apply_basic_for` from `local` rather than restating them, so `run both`
+and `run both --cluster` cannot drift on stage order or on which correction `correct`
+applies. `--start-at` / `--stop-after` work on both, which is also the resume mechanism:
+regenerate from the stage that failed.
+
+### IDs, not names — that is why this works now
+
+`create_intensity_correction_script`'s docstring has always said name-based `-w` proved
+unreliable here, and that is why the intensity stages were three files with "wait for each
+one" in prose. ID-based dependencies are a different mechanism: `bsub` prints `Job <12345>
+is submitted to queue <normal>.`, the script captures the number, and the next stage gets
+`-w "done(12345)"`.
+
+Two things this makes load-bearing:
+
+- **The `-w` expression must be DOUBLE-quoted, not `shlex.quote`d.** It holds `&&` and
+  parentheses (needs quoting) *and* `$J_STATS_0` (needs expanding). Single quotes submit the
+  literal `done($J_STATS_0)`, which LSF accepts and never satisfies. Caught while writing it,
+  not by a test — the test exists now.
+- **An unparseable job id has to kill the script.** An empty variable makes the next
+  `-w "done()"` another expression LSF accepts and never satisfies, so one failed `bsub`
+  would silently detach every stage after it. `jsub` exits 1 instead; verified by running the
+  generated shell against a stub `bsub` that fails mid-chain (2 of 3 submitted, exit 1).
+
+Requeue interacts *correctly*: `-Q 140` returns an element to PEND under the same job id, so
+`done(<id>)` is not satisfied until it finally finishes.
+
+### `done()` and not `ended()`
+
+`done()` requires success; `ended()` fires either way. Chosen `done()` because a stage that
+starts on a partial previous stage does not fail — it produces a quietly wrong answer.
+`int-aggregate` will solve a target from 195 of 196 tiles and report `n_present` without
+complaint, and that target then rescales every tile.
+
+The price is real and worth knowing: one genuinely failed element parks everything downstream
+in PEND with `Dependency condition never satisfied` (`bjobs -l <id> | grep -i depend`). The
+generated script's header says so. It is a one-word edit in a generated file for anyone who
+wants the other trade — which is the reason this generates a script instead of driving LSF
+from Python.
+
+### `emptiness` is measured at generation time, not submitted
+
+It is first in `PIPELINES` and absent from the chain. `_stats_prep`'s fingerprint decides
+whether a camera's finished background-quantile partials survive, it is computed in the
+submitting process, and it reads `empty_threshold` — so the measurement has to be on disk
+before anything goes out. `ensure_emptiness` skips the rescan when it already is. The
+consequence is that `--cluster` does real work on the submit host the first time.
+
+### `qstack` and `basic` get 8x the run limit
+
+Both were run by hand before this existed, so neither has ever been measured under LSF, and
+each processes a whole camera per element rather than one chunk range or one tile. The 60 min
+default is ~17x the apply stage's worst case; against a whole-camera BaSiC fit it could be
+*shorter* than a healthy run.
+
+The asymmetry is what forces a generous value: overshooting costs a wedged host a few idle
+hours, undershooting costs an **infinite requeue loop** — `-Q 140` has no job-level retry cap
+— and in a chain nothing downstream ever starts. `WHOLE_CAMERA_RUNLIMIT = 8`; replace it with
+a measurement when there is one. `basic` is one array element per camera, so the fits run
+concurrently.
+
+### `SPOTLIGHT_APPLY_BASIC`, because each stage is now its own process
+
+`local.run_pipeline` overrides `apply_basic` in-process from the pipeline NAME. On the cluster
+the stages are separate processes that would each auto-detect from whether the fields exist,
+and the detection is wrong in exactly the case that prompted this: `--cluster intensity` on an
+experiment with leftover fields detects True, measures all 196 tiles from flat-fielded voxels,
+and only fails hours later in `correct._check_basic_mode`.
+
+So the generated script states it in the environment on the two stages that read the flag
+(`int-stats`, `int-aggregate`); `correct` sets its own from `--mode`. The env var **beats**
+both the toml and the detection, so that a cluster run and a local run of the same pipeline
+name reach the same answer.
+
+Note this is not a bug in the `both` chain even without the env var — `basic` runs before
+`int-stats`, so the fields exist by the time detection runs. It is `intensity` that needs it.
+
 ## A hung element is usually a hung HOST, not a hung code path
 
 `mouse_hipp_3_channel`, job `153471857` (`int-apply`, `[3-6,65-560]`, 30 slots each).

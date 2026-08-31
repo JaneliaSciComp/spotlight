@@ -12,6 +12,11 @@ scripts invoke. Only who loops over the units changes.
     python -m spotlight run both --dry-run
     python -m spotlight run spotfix 126 158
 
+`--cluster` takes the same pipeline names to `scripts.write_pipeline_script`, which submits
+these stages to LSF chained on job ids instead of walking them here. The pipeline
+definitions below are shared, so the two routes cannot drift on stage order, on which
+correction `correct` applies, or on `apply_basic`.
+
 Sequential over units, on purpose. Each stage is already concurrent inside itself (asyncio
 over reads, a thread pool for the numpy) and sized to a memory budget derived from the
 whole machine, so running two units at once would double the memory while competing for
