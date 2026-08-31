@@ -53,9 +53,9 @@ DEFAULTS = {
     "spotfix_contrast_um": 120.6,   # "dark against bright surroundings?" window
     "spotfix_presence_um": 261.25,  # "do the neighbours show specimen here?" window
     "spotfix_edge_step": 0.0526315789,  # gain discontinuity allowed at the mask edge
-    "spotfix_loc_t": 0.5,           # deadband on neighbour presence
     "spotfix_floor_t": 0.25,        # deadband on the tile's own signal
     "spotfix_floor_sigma": 4.0,     # signal-floor ramp top, in bg_std above bg
+    "spotfix_dead_sigma": 1.0,      # below bg by this many bg_std = no light reached here
     # The level a neighbour must reach to count as "specimen is here" is PER TILE, taken
     # from each setup's own `threshold` in the intensity target (spotlight computes it, `li`
     # by default). Each neighbour is judged against its OWN threshold and normalised by it
@@ -355,39 +355,8 @@ def _presence(nbfg, covf, k, min_cov=0.05, lo=0.03, hi=0.12):
     return np.clip((frac - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
 
 
-def _lateral_fill(nbo, covf, min_cov=0.05, scales=(3, 5, 9, 15, 25), min_den=0.02):
-    """Neighbour level filled from the nearest covered cells LATERALLY, in-plane only.
-
-    Two choices, both against the obvious:
-
-    * evidence is `covf >= min_cov` ALONE, with no foreground requirement. A covered but
-      BLACK neighbour is evidence OF DARKNESS, not an absence of information. Requiring
-      foreground borrows only from bright cells, which is a stronger survivorship bias than
-      the slice median it replaces -- measured, it took the expectation at one background
-      cell from 65 DN to 177 rather than down to the 9 DN its own overlaps read.
-    * the kernel is IN-PLANE (z extent 1). The defect changes fast along z and slowly
-      laterally, which is why the gain grid is unbinned in z; a kernel 8x deeper in z than
-      wide (the natural "physically isotropic" choice) pools +-12 z cells and drags in
-      bright cells from other depths, giving 55 DN instead of 11.
-    """
-    from scipy.ndimage import uniform_filter
-    ev = covf >= min_cov
-    out = np.where(ev, nbo, np.nan).astype(np.float64)
-    src = np.where(ev, nbo, 0.0).astype(np.float32)
-    evf = ev.astype(np.float32)
-    for k in scales:
-        need = np.isnan(out)
-        if not need.any():
-            break
-        num = uniform_filter(src, size=(1, k, k), mode="nearest")
-        den = uniform_filter(evf, size=(1, k, k), mode="nearest")
-        ok = need & (den > min_den)
-        out[ok] = num[ok] / den[ok]
-    return np.nan_to_num(out).astype(np.float32)
-
-
 def expectation(obs, nbo, covf, nbfg, bg, signal, min_cov=0.05, min_fg=0.10,
-                collapse=0.5, floor_t=0.25, mult=3.0, cap_local=True):
+                collapse=0.5, floor_t=0.25, mult=3.0):
     """What should this cell read? One rule, three cases:
 
       1. a neighbour covers it        -> the neighbour's own value (a measurement; wins)
@@ -404,16 +373,6 @@ def expectation(obs, nbo, covf, nbfg, bg, signal, min_cov=0.05, min_fg=0.10,
     for i in range(level.shape[0]):
         if have[i].any():
             level[i][~have[i]] = np.median(nbo[i][have[i]])
-    if cap_local:
-        # Local evidence may only LOWER the expectation, never raise it. A z slice is often
-        # bimodal -- measured at one plane, 296 covered cells split between ~9 DN and
-        # 218-268 DN, so their median lands at 65 and describes neither population. Where
-        # the nearby overlaps are dark that median is a survivorship artifact and the local
-        # value is a direct measurement; where they are bright the median was already right,
-        # and replacing it outright regressed five judged sites (one from 33 to 119 DN).
-        # Asymmetric, so it fixes the first case and cannot touch the second.
-        lat = _lateral_fill(nbo, covf, min_cov=min_cov)
-        level = np.where(lat > 0, np.minimum(level, lat), level)
     with np.errstate(invalid="ignore"):
         plateau = np.nanmedian(np.where(obs > mult * bg, obs, np.nan), axis=0)
     plateau = np.nan_to_num(plateau)[None, :, :]
@@ -495,8 +454,27 @@ def gain_field(cfg, setup, nbrs=None, ctx=None, verbose=True):
     lev, ok, tol = _precondition(r, ev, valid, cfg)
     kp = max(1, int(round(p["spotfix_presence_um"] / (ybin * vox_um[1]))))
     loc = _presence(nbfg, covf, kp)
-    lt, ft = float(p["spotfix_loc_t"]), float(p["spotfix_floor_t"])
-    gate = np.maximum(np.where(loc >= lt, loc, 0.0), np.where(signal >= ft, signal, 0.0))
+    # `local_presence` passes straight through: it saturates, so the deadband it used to
+    # carry (`spotfix_loc_t`) was measured INERT -- 0.0, 0.5 and 0.9 give byte-identical
+    # values at all 15 labelled sites, after also changing nothing on the gate footprint
+    # (38.45% vs 38.31%) or on a healthy tile (0.15% of cells). The floor keeps its
+    # deadband, which is not inert (removing that branch costs 3.8 DN mean).
+    ft = float(p["spotfix_floor_t"])
+    gate = np.maximum(loc, np.where(signal >= ft, signal, 0.0))
+
+    # A cell whose median sits well BELOW the background mean had no light reach it at all
+    # -- it is outside the illuminated volume, not attenuated -- and nothing should be
+    # extrapolated into it. `signal_floor_weight` cannot express this: it clips at 0, so a
+    # cell at 5 DN and one at 13 DN both score exactly 0 when bg is 16. A cell is a median
+    # over ~64 voxels, so its own noise is bg_std/8; 1 sd below the MEAN is therefore far
+    # outside the cell's noise and a real population difference, not a fluctuation.
+    #
+    # This is what separates the sites the owner needs left dark from the ones needing fill,
+    # and they are otherwise identical: uncovered, and 5-6 DN against 10-14 DN. Measured at
+    # 1.0 sd, every labelled site lands within a few DN of the approved result; it is what
+    # replaced a hardcoded 256 DN foreground constant that only worked in a 2%-wide window.
+    dead = obs < bg - float(p["spotfix_dead_sigma"]) * bg_std
+    gate = np.where(dead, 0.0, gate)
 
     er = edge_r(cfg)
     mask = valid & (r < er)
@@ -527,6 +505,7 @@ def gain_field(cfg, setup, nbrs=None, ctx=None, verbose=True):
         "healthy_level": round(lev, 4), "precondition_ok": bool(ok),
         "precondition_tol": round(tol, 4),
         "cells_masked_pct": round(100 * float(mask.mean()), 3),
+        "cells_dead_pct": round(100 * float(dead.mean()), 3),
         "cells_gained_pct": round(100 * float((g > 1).mean()), 3),
         "gain_max": round(float(g.max()), 3),
         "gain_median_over_gained": (round(float(np.median(g[g > 1])), 4)
@@ -545,6 +524,9 @@ def gain_field(cfg, setup, nbrs=None, ctx=None, verbose=True):
               f"{p['spotfix_smooth_lat_um']:.1f} um lateral = {fp} cells")
         print(f"spotfix: contrast window {p['spotfix_contrast_um']:.1f} um = {kc} voxels "
               f"at level {lvl}")
+        print(f"spotfix: {100 * float(dead.mean()):.2f}% of cells are more than "
+              f"{p['spotfix_dead_sigma']}sd below background (no light reached them; not "
+              f"corrected)")
         print(f"spotfix: healthy level {lev:.4f} vs its neighbours "
               f"(tolerance +-{tol:.4f}) -- precondition {'OK' if ok else 'FAILED'}")
     return g, contrast_mean, lvl, report

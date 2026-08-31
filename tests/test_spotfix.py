@@ -384,49 +384,76 @@ def test_nbfg_asks_whether_the_NEIGHBOUR_SHOWS_FOREGROUND_not_whether_it_is_pres
     assert covf2[0, 0, 0] == 0.0 and nbfg2[0, 0, 0] == 0.0
 
 
-def test_local_black_overlap_lowers_the_expectation_but_bright_overlap_cannot_raise_it():
-    """The asymmetric cap. A z slice is often bimodal, so its median describes neither
-    population: measured at one plane, 296 covered cells split between ~9 DN and 218-268 DN
-    and the median landed at 65. Where the nearby overlaps are dark that median is a
-    survivorship artifact; where they are bright it was already right.
+def test_a_cell_far_below_background_is_never_corrected():
+    """A cell median well BELOW the background mean means no light reached it -- outside the
+    illuminated volume rather than attenuated -- so nothing may be extrapolated into it.
+
+    This is the only feature found that separates the sites needing to stay dark from the
+    ones needing fill: both are uncovered, and they differ only by 5-6 DN against 10-14 when
+    bg is 16. `signal_floor_weight` cannot express it, because it clips at 0 and maps both
+    to exactly 0. Six other candidates were measured and separate neither (column plateau,
+    live-z fraction, distance to coverage, slice level, local neighbour level, the tile's
+    own lateral mean).
     """
-    # FIVE z planes, so an "isotropic in physical space" kernel (8x deeper in z than wide,
-    # the natural-looking choice) can be told apart from an in-plane one: at z=2 the left
-    # side's overlaps are dark, but at z=0 and z=4 the SAME lateral position is bright, so a
-    # deep kernel pools them and the expectation comes out high again. Measured on real
-    # data: 55 DN from a deep kernel against 11 DN in-plane.
-    #
-    # Within the test plane, wide enough that the NEAREST evidence is unambiguous:
-    #   x 0-5   covered, BLACK (9 DN)
-    #   x 6     uncovered, immediately beside the black region   <- must be capped down
-    #   x 9     uncovered, immediately beside the bright region   <- must NOT be raised
-    #   x 10-15 covered, BRIGHT (250 DN)
-    Z = 5
-    nbo = np.zeros((Z, 3, 16), np.float32)
-    covf = np.zeros((Z, 3, 16), np.float32)
-    for z in range(Z):
-        nbo[z, :, 0:6] = 9.0 if z == 2 else 250.0     # dark only in the plane under test
-        covf[z, :, 0:6] = 1.0
-        nbo[z, :, 10:16] = 250.0
-        covf[z, :, 10:16] = 1.0
-    obs = np.full((Z, 3, 16), 5.0, np.float32)
-    nbfg = np.where(nbo >= 100, 1.0, 0.0).astype(np.float32)
-    signal = np.zeros((Z, 3, 16), np.float32)
-    capped = spotfix.expectation(obs, nbo, covf, nbfg, bg=10.0, signal=signal,
-                                 cap_local=True)
-    plain = spotfix.expectation(obs, nbo, covf, nbfg, bg=10.0, signal=signal,
-                                cap_local=False)
-    slice_median = np.median(nbo[2][covf[2] >= 0.05])       # ~129, between the two modes
-    assert plain[2, 1, 6] == pytest.approx(slice_median), \
-        "without the cap an uncovered cell takes the whole slice's median"
-    assert capped[2, 1, 6] < 60.0, \
-        ("a cell whose nearby overlaps read 9 DN must not inherit the bimodal slice median "
-         f"{slice_median:.1f}: got {capped[2, 1, 6]:.1f}")
-    assert capped[2, 1, 9] == pytest.approx(plain[2, 1, 9]), \
-        ("beside the BRIGHT region the slice median was already the lower of the two, so "
-         "the cap must leave it alone")
-    # covered cells keep their own measured value either way -- the cap is only a fallback
-    assert capped[2, 1, 0] == pytest.approx(9.0)
-    assert capped[2, 1, 15] == pytest.approx(250.0)
-    # and the cap can only lower: nowhere does it exceed the uncapped field
-    assert (capped <= plain + 1e-6).all(), "the cap must never raise the expectation"
+    bg, bg_std = 16.0, 8.0
+    obs = np.array([[[5.0, 13.0, 20.0]]], np.float32)      # 1.4 sd below / 0.4 below / above
+    dead = obs < bg - 1.0 * bg_std                          # the rule under test
+    assert dead.tolist() == [[[True, False, False]]], \
+        "only the cell more than 1 sd below the background MEAN counts as unilluminated"
+    # and the floor weight really does lose the distinction it has to make
+    sig = spotfix._signal(obs, bg, bg_std, 4.0)
+    assert sig[0, 0, 0] == sig[0, 0, 1] == 0.0, \
+        "signal_floor_weight clips at 0, so 5 DN and 13 DN are indistinguishable to it"
+
+
+def test_fix_tile_leaves_an_unilluminated_region_alone_even_where_a_neighbour_is_bright(
+        tmp_path, monkeypatch):
+    """End to end: a region well below background must survive untouched even though a
+    neighbour covers it and reads 300 DN. Without the dead-cell rule the neighbour's value
+    is taken as the target and the region is amplified 100x.
+
+      z 8-15, x 8-15          attenuated to 30, covered, neighbour says 300 -> lifted
+      inside it, y 4-7        3 DN, more than 1 sd below bg (10 +- 3)       -> untouched
+
+    The dead region is aligned to the 4-voxel gain cells on purpose: `obs` is a cell MEDIAN,
+    so a region straddling cell boundaries mixes 3 DN with 30 and never falls below the cut.
+    """
+    import tensorstore as ts
+    Z, Y, X = 16, 16, 16
+
+    def fill(s):
+        a = np.full((Z, Y, X), 300, np.uint16)
+        if s == 0:
+            a[8:, :, 8:] = 30
+            a[8:, 4:8, 8:] = 3            # no light reached here (cells y=1)
+        return a
+
+    out = tmp_path / "corrected"
+    _store(str(out), (0, 1), (Z, Y, X), fill)
+    cfg = _xml(tmp_path, {0: ((X, Y, Z), (0, 0, 0)), 1: ((X, Y, Z), (8, 0, 0))})
+    results = tmp_path / "results"
+    results.mkdir()
+    (results / "intensity_target.json").write_text(json.dumps(
+        {"setups": {"0": {"bg_mean": 10.0, "bg_std": 3.0, "threshold": 100.0},
+                    "1": {"bg_mean": 10.0, "bg_std": 3.0, "threshold": 100.0}}}))
+    monkeypatch.chdir(tmp_path)
+    cfg = {**cfg, "output_intensity_path": str(out), "output_format": "zarr3",
+           "results_root": str(results), "chunk_size": [8, 8, 8], "shard_size": [8, 8, 8],
+           "spotfix_level": 0, "spotfix_cell_um": 0.157 * 4,
+           "spotfix_smooth_z_um": 0.628, "spotfix_smooth_lat_um": 0.157 * 4,
+           "spotfix_presence_um": 0.157 * 8, "spotfix_contrast_um": 0.157 * 8,
+           "n_cores_correction": 2}
+    read = lambda: np.asarray(ts.open({
+        "driver": "zarr3", "kvstore": {"driver": "file", "path": f"{out}/s0-t0.zarr/0"}},
+        open=True).result()[0, 0].read().result())
+    before = read()
+    spotfix.fix_tile(cfg, 0)
+    after = read()
+
+    alive = np.zeros((Z, Y, X), bool); alive[8:, 10:, 8:] = True    # the 30 DN region
+    deadr = np.zeros((Z, Y, X), bool); deadr[8:, 5:7, 10:14] = True  # dead interior
+    assert after[alive].mean() > 1.5 * before[alive].mean(), \
+        "the attenuated region beside it must still be lifted"
+    assert after[deadr].max() <= 4, \
+        (f"an unilluminated region was amplified to {after[deadr].max()} -- the dead-cell "
+         "rule is not being applied to the gate")
