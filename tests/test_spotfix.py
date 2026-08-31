@@ -15,14 +15,21 @@ import pytest
 from spotlight import spotfix
 
 
-def _xml(tmp_path, tiles):
-    """A minimal SpimData2 xml: `tiles` is {setup: (size_xyz, origin_xyz)}."""
+def _xml(tmp_path, tiles, channels=None):
+    """A minimal SpimData2 xml: `tiles` is {setup: (size_xyz, origin_xyz)}.
+
+    `channels` optionally gives {setup: channel}; omitted means no <attributes> block at
+    all, which must behave as single-channel.
+    """
     parts = ['<?xml version="1.0"?>', "<SpimData>", "<SequenceDescription>", "<ViewSetups>"]
     for s, (size, _o) in tiles.items():
+        attr = ("<attributes><illumination>0</illumination>"
+                f"<channel>{channels[s]}</channel><angle>0</angle></attributes>"
+                if channels else "")
         parts += [f"<ViewSetup><id>{s}</id>"
                   f"<size>{size[0]} {size[1]} {size[2]}</size>"
                   "<voxelSize><unit>um</unit><size>0.157 0.157 0.628</size></voxelSize>"
-                  "</ViewSetup>"]
+                  f"{attr}</ViewSetup>"]
     parts += ["</ViewSetups>", "</SequenceDescription>", "<ViewRegistrations>"]
     for s, (_size, o) in tiles.items():
         parts += [f'<ViewRegistration timepoint="0" setup="{s}">',
@@ -45,6 +52,31 @@ def test_neighbours_come_from_the_geometry_and_exclude_disjoint_tiles(tmp_path):
                           2: ((100, 100, 10), (300, 0, 0))})
     assert spotfix.neighbours(cfg, 0) == [1]
     assert spotfix.neighbours(cfg, 2) == []
+
+
+def test_a_different_channel_is_not_a_neighbour_however_perfectly_it_overlaps(tmp_path):
+    """The same tile in another channel occupies exactly the same space, so overlap alone
+    admits it -- and it is a different fluorophore, not an independent measurement of this
+    signal. In the real dataset those setups also carry only a single-scale `raw/0`, so
+    asking one for the analysis level fails outright:
+
+        NOT_FOUND: ... s672-t0.zarr/4/zarr.json does not exist
+
+    on a run that asked for tile 126.
+    """
+    tiles = {126: ((100, 100, 10), (0, 0, 0)),     # ch 0, the tile being fixed
+             127: ((100, 100, 10), (50, 0, 0)),    # ch 0, a real neighbour
+             672: ((100, 100, 10), (0, 0, 0)),     # ch 1, exactly co-located
+             673: ((100, 100, 10), (50, 0, 0))}    # ch 1, co-located with the neighbour
+    cfg = _xml(tmp_path, tiles, channels={126: 0, 127: 0, 672: 1, 673: 1})
+    assert spotfix.neighbours(cfg, 126) == [127]
+    assert spotfix.neighbours(cfg, 672) == [673]
+
+
+def test_a_file_without_attributes_behaves_as_single_channel(tmp_path):
+    cfg = _xml(tmp_path, {0: ((100, 100, 10), (0, 0, 0)),
+                          1: ((100, 100, 10), (50, 0, 0))})
+    assert spotfix.neighbours(cfg, 0) == [1]
 
 
 def test_a_non_overlapping_shift_places_nothing_rather_than_wrapping():

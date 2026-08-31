@@ -80,6 +80,17 @@ def _xml(cfg):
     return ET.parse(cfg["dataset_xml"]).getroot()
 
 
+# Which ViewSetup attributes must match for a tile to be a usable reference. A different
+# channel images the same space with a different fluorophore, so it is NOT an independent
+# measurement of this signal -- and in this dataset the non-channel-0 setups carry only a
+# single-scale `raw/0`, so asking one for the analysis level fails outright:
+#
+#   NOT_FOUND: ... s672-t0.zarr/4/zarr.json does not exist
+#
+# for a run that asked for tile 126. Overlap alone is not the test.
+_MATCH_ATTRS = ("channel", "angle", "illumination")
+
+
 def _sizes_and_transforms(root):
     """setup -> (size_xyz, composed 4x4 pixel->world affine).
 
@@ -103,6 +114,20 @@ def _sizes_and_transforms(root):
     return sizes, xf
 
 
+def _attrs(root):
+    """setup -> {channel, angle, illumination}, absent keys omitted.
+
+    A file with no <attributes> at all (a hand-built fixture) yields empty dicts, which
+    compare equal, so such a dataset behaves as single-channel rather than matching nothing.
+    """
+    out = {}
+    for vs in root.findall(".//ViewSetups/ViewSetup"):
+        a = vs.find("attributes")
+        out[int(vs.findtext("id"))] = ({k: a.findtext(k) for k in _MATCH_ATTRS
+                                       if a.findtext(k) is not None} if a is not None else {})
+    return out
+
+
 def neighbours(cfg, setup, root=None):
     """Setups whose world-space bounding box intersects `setup`'s, from the GEOMETRY.
 
@@ -112,9 +137,11 @@ def neighbours(cfg, setup, root=None):
     """
     root = _xml(cfg) if root is None else root
     sizes, xf = _sizes_and_transforms(root)
+    attrs = _attrs(root)
     if setup not in sizes or setup not in xf:
         raise KeyError(f"setup {setup} has no ViewSetup/ViewRegistration in "
                        f"{cfg['dataset_xml']}")
+    mine = attrs.get(setup, {})
 
     def bbox(s):
         sx, sy, sz = sizes[s]
@@ -127,6 +154,8 @@ def neighbours(cfg, setup, root=None):
     out = []
     for s in sizes:
         if s == setup or s not in xf:
+            continue
+        if attrs.get(s, {}) != mine:      # same channel/angle/illumination only
             continue
         lo, hi = bbox(s)
         if (lo < hi0).all() and (hi > lo0).all():
@@ -209,6 +238,9 @@ def neighbour_reference(cfg, setup, nbrs, level, ctx=None):
     cnt = np.zeros(a.shape, np.uint8)
     for n in nbrs:
         d = (_origin_world(cfg, n, root) - p0) / vw     # (dx, dy, dz) in voxels
+        # No per-neighbour fallback: same-channel tiles share a pyramid, so if one lacks
+        # the analysis level they all do -- and that is the tile's own level count, which
+        # `gain_field` has already clamped `spotfix_level` to.
         v, ok = _place(_read_level(cfg, n, level, ctx), (d[2], d[1], d[0]), a.shape)
         if not ok:
             continue
