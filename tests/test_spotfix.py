@@ -132,13 +132,13 @@ def test_a_shard_rounds_rather_than_truncates_and_never_darkens():
     # apart at all: 100 * 1.004 = 100.4 truncates AND rounds to 100, so it proves nothing.
     canon = np.full((2, 3, 4), 100, np.uint16)
     flat = spotfix._sampler(np.full((2, 1, 1), 1.0, np.float32), (2, 3, 4))
-    assert (spotfix._apply_shard(canon.copy(), flat, 0, 0, 3, 0, 4, 65535) == 100).all(), \
+    assert (spotfix._apply_shard(canon.copy(), flat, None, 0, 0, 3, 0, 4, 65535) == 100).all(), \
         "a gain of exactly 1 must not move any voxel"
     up = spotfix._sampler(np.full((2, 1, 1), 1.006, np.float32), (2, 3, 4))
-    out = spotfix._apply_shard(canon.copy(), up, 0, 0, 3, 0, 4, 65535)
+    out = spotfix._apply_shard(canon.copy(), up, None, 0, 0, 3, 0, 4, 65535)
     assert (out == 101).all(), "100 * 1.006 = 100.6 must round UP to 101, not truncate to 100"
     down = spotfix._sampler(np.full((2, 1, 1), 1.004, np.float32), (2, 3, 4))
-    out2 = spotfix._apply_shard(canon.copy(), down, 0, 0, 3, 0, 4, 65535)
+    out2 = spotfix._apply_shard(canon.copy(), down, None, 0, 0, 3, 0, 4, 65535)
     assert (out2 == 100).all(), "100 * 1.004 = 100.4 must round DOWN to 100"
 
 
@@ -230,8 +230,8 @@ def two_tiles(tmp_path, monkeypatch):
     results = tmp_path / "results"
     results.mkdir()
     (results / "intensity_target.json").write_text(json.dumps(
-        {"setups": {"0": {"bg_mean": 10.0, "bg_std": 3.0},
-                    "1": {"bg_mean": 10.0, "bg_std": 3.0}}}))
+        {"setups": {"0": {"bg_mean": 10.0, "bg_std": 3.0, "threshold": 100.0},
+                    "1": {"bg_mean": 10.0, "bg_std": 3.0, "threshold": 100.0}}}))
     monkeypatch.chdir(tmp_path)
     return {**cfg,
             "output_intensity_path": str(out), "output_format": "zarr3",
@@ -298,3 +298,87 @@ def test_fix_tile_refuses_a_tile_that_is_uniformly_off_its_neighbours(two_tiles,
         spotfix.fix_tile(cfg, 0)
     # and it must not have moved the tile aside before refusing
     assert os.path.exists(p), "a refused tile must be left exactly where it was"
+
+
+def test_a_dark_structure_inside_the_defect_keeps_its_own_value(tmp_path, monkeypatch):
+    """`local_contrast_weight` is what separates an anatomical HOLE from attenuation.
+
+    Both are dark pointwise; only the ratio to their surroundings tells them apart. Omitting
+    this step was why the first packaged run looked worse than the prototype on both tiles:
+    every dark structure inside the corrected region took the full gain.
+
+      z 8-15, x 8-15   attenuated to 150 with a neighbour saying 300  -> must be lifted
+      inside it        a 2x2 hole at 5 DN against ~150 surroundings   -> must stay dark
+    """
+    Z, Y, X = 16, 16, 16
+
+    def fill(s):
+        a = np.full((Z, Y, X), 300, np.uint16)
+        if s == 0:
+            a[8:, :, 8:] = 150                     # attenuated, not dead
+            a[8:, 6:8, 11:13] = 5                  # a compact hole inside it
+        return a
+
+    out = tmp_path / "corrected"
+    _store(str(out), (0, 1), (Z, Y, X), fill)
+    cfg = _xml(tmp_path, {0: ((X, Y, Z), (0, 0, 0)), 1: ((X, Y, Z), (8, 0, 0))})
+    results = tmp_path / "results"
+    results.mkdir()
+    (results / "intensity_target.json").write_text(json.dumps(
+        {"setups": {"0": {"bg_mean": 10.0, "bg_std": 3.0, "threshold": 100.0},
+                    "1": {"bg_mean": 10.0, "bg_std": 3.0, "threshold": 100.0}}}))
+    monkeypatch.chdir(tmp_path)
+    cfg = {**cfg, "output_intensity_path": str(out), "output_format": "zarr3",
+           "results_root": str(results), "chunk_size": [8, 8, 8], "shard_size": [8, 8, 8],
+           "spotfix_level": 0, "spotfix_cell_um": 0.157 * 4,
+           "spotfix_smooth_z_um": 0.628, "spotfix_smooth_lat_um": 0.157 * 4,
+           "spotfix_presence_um": 0.157 * 8, "spotfix_contrast_um": 0.157 * 8,
+           "n_cores_correction": 2}
+
+    import tensorstore as ts
+    read = lambda: np.asarray(ts.open({
+        "driver": "zarr3",
+        "kvstore": {"driver": "file", "path": f"{out}/s0-t0.zarr/0"}},
+        open=True).result()[0, 0].read().result())
+    before = read()
+    spotfix.fix_tile(cfg, 0)
+    after = read()
+
+    hole = (slice(8, None), slice(6, 8), slice(11, 13))
+    tissue = np.zeros((Z, Y, X), bool)
+    tissue[8:, :, 8:] = True
+    tissue[hole] = False
+
+    assert after[tissue].mean() > 1.3 * before[tissue].mean(), \
+        "the attenuated tissue around the hole must still be lifted"
+    assert after[hole].max() <= 7, \
+        f"the hole was brightened to {after[hole].max()} -- the contrast weight is not applied"
+
+
+def test_nbfg_asks_whether_the_NEIGHBOUR_SHOWS_FOREGROUND_not_whether_it_is_present():
+    """`nbfg` feeds `local_presence`, i.e. "is there specimen here". Conflating it with
+    `covf` ("is a neighbour here") opens the gate everywhere: measured on tile 126, the gate
+    fired on 99.3% of cells instead of 37.5% and the post-despeckle gain reached 55x instead
+    of 22x. Two independent errors did it -- no foreground threshold, and dividing by the
+    cell size rather than by the covered count -- so both are pinned here.
+    """
+    # one 1x4x4 cell. A neighbour covers half of it; of the covered voxels, a quarter are
+    # above the foreground level.
+    nb = np.zeros((1, 4, 4), np.float32)
+    cov = np.zeros((1, 4, 4), bool)
+    cov[0, :2, :] = True                 # 8 of 16 voxels covered
+    nb[0, 0, :2] = 300.0                 # 2 of those 8 are foreground
+    nb[0, 0, 2:] = 50.0                  # covered but dim -- present, NOT foreground
+    nb[0, 1, :] = 50.0
+    a = np.full((1, 4, 4), 100, np.float32)
+    fgmask = cov & (nb >= 256.0)
+    _obs, _nbo, covf, nbfg = spotfix._coarsen(a, nb, cov, fgmask, 4, 4)
+    assert covf[0, 0, 0] == pytest.approx(0.5), "half the cell is covered"
+    assert nbfg[0, 0, 0] == pytest.approx(0.25), \
+        ("of the COVERED voxels, a quarter show foreground -- got "
+         f"{nbfg[0, 0, 0]}; 0.5 means it is measuring coverage, 0.125 means it divided by "
+         "the cell size instead of the covered count")
+    # a cell nothing covers reports 0, not a division by zero
+    cov2 = np.zeros((1, 4, 4), bool)
+    _o, _n, covf2, nbfg2 = spotfix._coarsen(a, nb, cov2, cov2 & (nb >= 256.0), 4, 4)
+    assert covf2[0, 0, 0] == 0.0 and nbfg2[0, 0, 0] == 0.0

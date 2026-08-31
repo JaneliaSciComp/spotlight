@@ -427,7 +427,24 @@ The rule, in order:
    feather. Moving it to binary morphology on the mask took the boundary step from 9.3% to
    22.5% on one tile and 90.6% on another — morphology can move a hard edge, never soften
    one.
-6. **apply** — trilinear to the output level, times `local_contrast_weight`, `np.rint`.
+6. **apply** — trilinear to the output level, damped by the contrast weight, `np.rint`.
+
+The contrast weight is not optional and was missing from the first packaged version, which
+is why that run looked worse than the prototype on both tiles: every dark structure inside
+the corrected region took the full gain instead of being damped. An anatomical hole and an
+attenuated region are indistinguishable pointwise — measured, 7 DN either way — and only the
+ratio to their surroundings separates them (local mean 191 for the hole, 7.8 for the
+attenuation). Its numerator must be per-voxel; its denominator is a `spotfix_contrast_um`
+lateral mean, computed at the ANALYSIS level and upsampled, because at level 0 the
+full-resolution version needs the whole volume as float (140 GB) or a 384-voxel halo per
+shard (~3x the reads). Validated against the prototype's per-voxel version: hole 0.0000 vs
+0.0000, attenuation 0.9701 vs 0.9631, correlation 0.99913.
+
+Two bugs it hit on the way in, both caught by `test_a_dark_structure_inside_the_defect_*`:
+the step being absent altogether, and then the local mean being named `loc`, which
+`local_presence` reassigns twenty lines later — leaving the weight present but identically
+1.0, i.e. inert. Shadowing is worth watching for in `gain_field`: it holds five different
+per-cell fields and they all want short names.
 
 ### `EDGE_R` is a feathering width, not a detection threshold
 
@@ -527,11 +544,28 @@ already-brighter) and ask whether each moved. That is the framing that answers "
 over-brighten healthy tissue", and under it the shipped config lifts already-healthy voxels
 by ~0.6%.
 
+### Neighbours must match channel, not merely overlap
+
+`neighbours()` selects on world-space bounding-box overlap AND on matching
+channel/angle/illumination. Overlap alone admits the same tile in another channel — it
+occupies exactly the same space — which is a different fluorophore and so not an independent
+measurement of this signal. It also fails outright, because in this dataset the
+non-channel-0 setups carry only a single-scale `raw/0`:
+
+    NOT_FOUND: ... s672-t0.zarr/4/zarr.json does not exist
+
+on a run that asked for tile 126. A file with no `<attributes>` block behaves as
+single-channel rather than matching nothing.
+
+There is no per-neighbour fallback for a missing analysis level: same-channel tiles share a
+pyramid, so `spotfix_level` is clamped once against the tile's own level count
+(`min(spotfix_level, n_levels - 1)`) and the chosen level is printed.
+
 ### Not verified
 
 The stage is tested end to end on a synthetic two-tile store (`tests/test_spotfix.py`), with
-every test mutation-checked. What has **not** run is a real tile: the algorithm was developed
-and judged in a scratch prototype, and `spotfix.py` is a reimplementation inside the package.
-Before trusting it on the real dataset, run one tile and compare against the prototype's
-output for the same setup — `_levels_in`, the pyramid rebuild, `write_group_metadata` and the
-backup/restore path have only ever seen 16³ arrays.
+every test mutation-checked. What has **not** been compared voxel-for-voxel against the
+prototype is a real tile. `_levels_in`, the pyramid rebuild, `write_group_metadata` and the
+backup/restore path have only ever seen 16^3 arrays, and `spotfix_contrast_um` converts to a
+768-voxel window at level 0 where the prototype only ever ran it at 96 — the conversion is
+what makes the parameter portable, but that scale is untested.

@@ -56,6 +56,13 @@ DEFAULTS = {
     "spotfix_loc_t": 0.5,           # deadband on neighbour presence
     "spotfix_floor_t": 0.25,        # deadband on the tile's own signal
     "spotfix_floor_sigma": 4.0,     # signal-floor ramp top, in bg_std above bg
+    # The level a neighbour must reach to count as "specimen is here" is PER TILE, taken
+    # from each setup's own `threshold` in the intensity target (spotlight computes it, `li`
+    # by default). Each neighbour is judged against its OWN threshold and normalised by it
+    # before averaging, so the test reduces exactly to a single constant when they agree.
+    # The prototype used a hardcoded 256 DN for every tile; the real thresholds here run
+    # 103-138, so this is a real change from the prototype's numbers -- see CLAUDE.md.
+    "spotfix_fg_dn": None,          # override the per-tile foreground level, in DN
 }
 
 
@@ -228,13 +235,41 @@ def _place(vals, shift_zyx, shape):
     return out, int(np.prod([a.stop - a.start for a in r]))
 
 
+def fg_levels(cfg, setups):
+    """setup -> the DN level at which that tile counts as foreground.
+
+    Per tile, from its own `threshold` in the intensity target. `spotfix_fg_dn` overrides
+    every tile with one value (what the prototype effectively did, at 256 DN).
+    """
+    override = params(cfg)["spotfix_fg_dn"]
+    if override:
+        return {s: float(override) for s in setups}
+    st = json.load(open(_config.target_path(cfg)))["setups"]
+    out = {}
+    for s in setups:
+        e = st.get(str(s))
+        if e is None or not e.get("threshold"):
+            raise KeyError(f"setup {s} has no `threshold` in "
+                           f"{_config.target_path(cfg)}; set spotfix_fg_dn to override")
+        out[s] = float(e["threshold"])
+    return out
+
+
 def neighbour_reference(cfg, setup, nbrs, level, ctx=None):
-    """(tile, neighbour_mean, covered) on the tile's own `level` grid."""
+    """(tile, neighbour_mean, covered, neighbour_is_foreground) on the tile's `level` grid.
+
+    The foreground mask is built from each neighbour's OWN threshold: every covering
+    neighbour contributes `value / its own threshold`, and the mean of that being >= 1 is
+    the test. With equal thresholds this is exactly `nb >= threshold`, so it generalises the
+    prototype's single constant rather than replacing it with something unrelated.
+    """
     root = _xml(cfg)
     a = _read_level(cfg, setup, level, ctx)
     vw = voxel_world(cfg, setup, level, root)          # (x, y, z) world units per voxel
     p0 = _origin_world(cfg, setup, root)
+    fg = fg_levels(cfg, [setup] + list(nbrs))
     tot = np.zeros(a.shape, np.float32)
+    norm = np.zeros(a.shape, np.float32)      # sum of value / that neighbour's threshold
     cnt = np.zeros(a.shape, np.uint8)
     for n in nbrs:
         d = (_origin_world(cfg, n, root) - p0) / vw     # (dx, dy, dz) in voxels
@@ -246,13 +281,16 @@ def neighbour_reference(cfg, setup, nbrs, level, ctx=None):
             continue
         m = v > 0                                      # exactly 0 == not covered by this one
         tot[m] += v[m]
+        norm[m] += v[m] / fg[n]
         cnt[m] += 1
     nb = np.zeros(a.shape, np.float32)
     np.divide(tot, np.maximum(cnt, 1), out=nb)
-    return a, nb, cnt > 0
+    cov = cnt > 0
+    nbfg_mask = cov & (norm / np.maximum(cnt, 1) >= 1.0)
+    return a, nb, cov, nbfg_mask
 
 
-def _coarsen(a, nb, cov, ybin, xbin):
+def _coarsen(a, nb, cov, fgmask, ybin, xbin):
     """Per-cell statistics on the gain grid: one cell per z voxel, `ybin`x`xbin` laterally.
 
     z is deliberately NOT binned -- the defect changes fast along z and slowly laterally,
@@ -262,6 +300,14 @@ def _coarsen(a, nb, cov, ybin, xbin):
     `obs` is the median over ALL of a cell's voxels. Taking it over only the voxels above
     background reports the few survivors in a mostly-dead cell and understates the defect
     several-fold.
+
+    `nbfg` is "of the voxels a neighbour COVERS here, what fraction show FOREGROUND" -- it
+    answers "is there specimen here", which is a different question from "is a neighbour
+    here" (`covf`). Getting it wrong in two ways at once (testing `nb > 0` instead of
+    `nb >= fg`, and dividing by the cell size instead of the covered count) made it equal
+    `covf`, which opened `local_presence` to ~1 everywhere: the gate fired on 99.3% of
+    cells against the prototype's 37.5%, and the post-despeckle gain reached 55x against
+    22x. That was the first packaged run looking worse than the prototype.
     """
     nz, ny, nx = a.shape
     ny -= ny % ybin
@@ -272,8 +318,11 @@ def _coarsen(a, nb, cov, ybin, xbin):
     with np.errstate(invalid="ignore"):
         nbo = np.nanmedian(nbf, axis=(2, 4))
     nbo = np.nan_to_num(nbo)
-    covf = r(cov).mean(axis=(2, 4))
-    nbfg = (np.where(r(cov), r(nb), 0.0) > 0).mean(axis=(2, 4))
+    covc = r(cov.astype(np.float32))
+    covf = covc.mean(axis=(2, 4))
+    denom = covc.sum(axis=(2, 4))
+    fgc = r(fgmask.astype(np.float32)).sum(axis=(2, 4))
+    nbfg = np.where(denom > 0, fgc / np.maximum(denom, 1), 0.0)
     return obs.astype(np.float32), nbo.astype(np.float32), covf, nbfg
 
 
@@ -372,7 +421,7 @@ def gain_field(cfg, setup, nbrs=None, ctx=None, verbose=True):
     stats = json.load(open(_config.target_path(cfg)))["setups"][str(setup)]
     bg, bg_std = float(stats["bg_mean"]), float(stats["bg_std"])
 
-    a, nb, cov = neighbour_reference(cfg, setup, nbrs, lvl, ctx)
+    a, nb, cov, fgmask = neighbour_reference(cfg, setup, nbrs, lvl, ctx)
     vw = voxel_world(cfg, setup, lvl, root)
     cal = np.abs(np.diag(_sizes_and_transforms(root)[1][setup][:3, :3]))
     # voxel size in MICRONS: world units are level-0 lateral voxels, so one world unit is
@@ -382,8 +431,19 @@ def gain_field(cfg, setup, nbrs=None, ctx=None, verbose=True):
     ybin = max(1, int(round(p["spotfix_cell_um"] / vox_um[1])))
     xbin = max(1, int(round(p["spotfix_cell_um"] / vox_um[2])))
 
-    obs, nbo, covf, nbfg = _coarsen(a, nb, cov, ybin, xbin)
-    del a, nb, cov
+    # The "dark against bright surroundings?" denominator: a `spotfix_contrast_um` lateral
+    # mean. Kept at the ANALYSIS level, not at the level being written. The numerator has to
+    # be per-voxel -- the question is whether THIS voxel is dark -- but a 120 um mean is
+    # fully represented at 2.5 um sampling, and computing it at level 0 would need either
+    # the whole volume as float (140 GB) or a 384-voxel halo per shard (~3x the reads).
+    from scipy.ndimage import uniform_filter
+    kc = max(3, int(round(p["spotfix_contrast_um"] / vox_um[1])))
+    # NOT `loc`: that name is taken below by `local_presence`, and shadowing it here
+    # silently replaced this whole-level mean with a gain-grid presence weight of ~1,
+    # i.e. a contrast weight of 1 everywhere -- the step present but inert.
+    contrast_mean = uniform_filter(a, size=(1, kc, kc), mode="nearest")
+    obs, nbo, covf, nbfg = _coarsen(a, nb, cov, fgmask, ybin, xbin)
+    del a, nb, cov, fgmask
     signal = _signal(obs, bg, bg_std, float(p["spotfix_floor_sigma"]))
     exp = expectation(obs, nbo, covf, nbfg, bg, signal,
                       floor_t=float(p["spotfix_floor_t"]))
@@ -421,6 +481,8 @@ def gain_field(cfg, setup, nbrs=None, ctx=None, verbose=True):
         "bins_yx": [ybin, xbin], "grid": list(g.shape),
         "edge_r": round(er, 6), "edge_step_pct": round(100 * (1 / er - 1), 2),
         "despeckle_cells": list(fp),
+        "contrast_window_cells": kc,
+        "fg_dn": {str(k): round(v, 2) for k, v in fg_levels(cfg, [setup] + nbrs).items()},
         "healthy_level": round(lev, 4), "precondition_ok": bool(ok),
         "precondition_tol": round(tol, 4),
         "cells_masked_pct": round(100 * float(mask.mean()), 3),
@@ -440,9 +502,11 @@ def gain_field(cfg, setup, nbrs=None, ctx=None, verbose=True):
               f"{report['gain_median_over_gained']:.3f}x, max {report['gain_max']:.2f}x")
         print(f"spotfix: despeckle {p['spotfix_smooth_z_um']:.1f} um z / "
               f"{p['spotfix_smooth_lat_um']:.1f} um lateral = {fp} cells")
+        print(f"spotfix: contrast window {p['spotfix_contrast_um']:.1f} um = {kc} voxels "
+              f"at level {lvl}")
         print(f"spotfix: healthy level {lev:.4f} vs its neighbours "
               f"(tolerance +-{tol:.4f}) -- precondition {'OK' if ok else 'FAILED'}")
-    return g, lvl, report
+    return g, contrast_mean, lvl, report
 
 
 def _lateral_um(cfg, root=None):
@@ -534,22 +598,40 @@ def _sampler(g, out_zyx):
     return plane
 
 
-def _apply_shard(canon, plane, z0, y0, y1, x0, x1, hi):
+# Where the contrast weight ramps. A voxel at or below `_W_LO` of its surroundings is a
+# compact dark structure and keeps its own value; at or above `_W_HI` it is dark along with
+# its surroundings, which is attenuation, and takes the full gain. Measured on the
+# prototype: an anatomical hole sits at ratio 0.04 (local mean 191 DN against its own 7),
+# a darkened region at 0.98 (local mean 7.8) -- the two are indistinguishable pointwise and
+# only the ratio separates them.
+_W_LO, _W_HI = 0.15, 0.50
+
+
+def _apply_shard(canon, gplane, wplane, z0, y0, y1, x0, x1, hi):
     """Multiply one shard by the gain, in place, plane by plane.
 
     `np.rint`, not truncation: casting a gain that interpolates to 0.99999997 downwards
     takes a whole tile down by one gray level everywhere it is applied.
+
+    The gain is damped by the contrast weight, which is what keeps an anatomical hole black
+    while the attenuated region around it is filled. Omitting it was the reason the first
+    packaged run looked worse than the prototype on both tiles.
     """
     for k in range(canon.shape[0]):
-        g = plane(z0 + k, y0, y1, x0, x1)
+        g = gplane(z0 + k, y0, y1, x0, x1)
         if g.max() <= 1.0 + 1e-7:
             continue
-        v = canon[k].astype(np.float32) * g
-        canon[k] = np.clip(np.rint(v), 0, hi).astype(canon.dtype)
+        v = canon[k].astype(np.float32)
+        if wplane is not None:
+            loc = wplane(z0 + k, y0, y1, x0, x1)
+            ratio = v / np.maximum(loc, 1e-3)
+            w = np.clip((ratio - _W_LO) / (_W_HI - _W_LO), 0.0, 1.0)
+            g = 1.0 + (g - 1.0) * w
+        canon[k] = np.clip(np.rint(v * g), 0, hi).astype(canon.dtype)
     return canon
 
 
-async def _write(cfg, setup, g, backup, report):
+async def _write(cfg, setup, g, loc, backup, report):
     """Read the backed-up tile, apply the gain, write the fixed pyramid in its place."""
     fmt = cfg["output_format"]
     spec = _SPEC[fmt]
@@ -577,7 +659,10 @@ async def _write(cfg, setup, g, backup, report):
     Z, Y, X = zyx
     origins = [(oz, oy, ox) for oz in range(0, Z, sz)
                for oy in range(0, Y, sy) for ox in range(0, X, sx)]
-    plane = _sampler(g, zyx)
+    gplane = _sampler(g, zyx)
+    # a second sampler, on the analysis level's own lateral grid rather than the
+    # gain grid -- the local mean is not binned laterally.
+    wplane = None if loc is None else _sampler(loc, zyx)
 
     # Same shape as `correct`: bounded shards in flight, the numpy in a thread pool so it
     # overlaps across cores instead of blocking the event loop, both sized from the
@@ -598,7 +683,7 @@ async def _write(cfg, setup, g, backup, report):
         async with sem:
             canon = await src[oz:z1, oy:y1, ox:x1].read(order="C")
             canon = await asyncio.get_running_loop().run_in_executor(
-                pool, _apply_shard, canon, plane, oz, oy, y1, ox, x1, hi)
+                pool, _apply_shard, canon, gplane, wplane, oz, oy, y1, ox, x1, hi)
             txn = ts.Transaction(atomic=False)
             await out_c[oz:z1, oy:y1, ox:x1].with_transaction(txn).write(canon)
             await txn.commit_async()
@@ -641,7 +726,7 @@ def fix_tile(cfg, setup, dry_run=False, force=False):
     the source is never the file being written.
     """
     t0 = time.perf_counter()
-    g, lvl, report = gain_field(cfg, setup)
+    g, loc, lvl, report = gain_field(cfg, setup)
     if not report["precondition_ok"] and not force:
         raise RuntimeError(
             f"spotfix: setup {setup} sits at {report['healthy_level']:.4f} of its "
@@ -660,7 +745,7 @@ def fix_tile(cfg, setup, dry_run=False, force=False):
         return report
     backup = backup_tile(cfg, setup)
     try:
-        asyncio.run(_write(cfg, setup, g, backup, report))
+        asyncio.run(_write(cfg, setup, g, loc, backup, report))
     except BaseException:
         # Put the original back if the write never got going, so a failure does not leave
         # the dataset without this tile.
