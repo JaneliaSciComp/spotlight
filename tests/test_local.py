@@ -96,13 +96,28 @@ def test_each_pipeline_pins_its_correction_mode(experiment, pipeline, expect_mod
     assert set(seen) == {expect_mode}
 
 
+# `spotfix` is deliberately not one of these: it repairs the OUTPUT of a correction run on
+# named tiles, so it neither measures emptiness first nor ends by correcting.
+CORRECTION_PIPELINES = ("basic", "intensity", "both")
+
+
 def test_stages_cover_every_cli_stage():
     """A stage added to the CLI but not to a pipeline is unreachable locally."""
     assert set(local.STAGES) == {
-        "emptiness", "stats", "qstack", "basic", "int-stats", "int-aggregate", "correct"}
-    for name, stages in local.PIPELINES.items():
+        "emptiness", "stats", "qstack", "basic", "int-stats", "int-aggregate", "correct",
+        "spotfix"}
+    for name in CORRECTION_PIPELINES:
+        stages = local.PIPELINES[name]
         assert stages[0] == "emptiness", f"{name} must measure emptiness first"
         assert stages[-1] == "correct", f"{name} must end by correcting"
+
+
+def test_spotfix_is_a_pipeline_of_its_own_shape():
+    """It runs after a correction, on tiles someone named -- so it must NOT be reachable
+    from the correction pipelines, or every run would try to repair every tile."""
+    assert local.PIPELINES["spotfix"] == ["spotfix"]
+    for name in CORRECTION_PIPELINES:
+        assert "spotfix" not in local.PIPELINES[name]
 
 
 # ─── apply_basic is a property of the PIPELINE, not of what is on disk ────────
@@ -141,7 +156,7 @@ def test_run_pipeline_overrides_a_stale_autodetected_value(capsys, monkeypatch):
     """End to end through the driver: a cfg that arrives claiming apply_basic=True must
     not carry that into an `intensity` run."""
     from spotlight import local
-    monkeypatch.setattr(local, "_units", lambda cfg, stage, mode: [])
+    monkeypatch.setattr(local, "_units", lambda cfg, stage, mode, tiles=None: [])
     local.run_pipeline({"apply_basic": True}, "intensity", dry_run=True)
     assert "apply_basic=False" in capsys.readouterr().out
 
@@ -232,7 +247,7 @@ def test_the_apply_basic_banner_does_not_contradict_the_correct_stage(capsys, mo
     is what has to say so. Pins that it names `mode`, which is what actually decides.
     """
     from spotlight import correct, local
-    monkeypatch.setattr(local, "_units", lambda cfg, stage, mode: [])
+    monkeypatch.setattr(local, "_units", lambda cfg, stage, mode, tiles=None: [])
     local.run_pipeline({"apply_basic": True}, "basic", dry_run=True)
     out = capsys.readouterr().out
     assert "apply_basic=False" in out

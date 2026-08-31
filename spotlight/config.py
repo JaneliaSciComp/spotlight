@@ -181,6 +181,10 @@ CORES_KEY = {
     "both": "n_cores_int_correct",
     "int-stats": "n_cores_int_stats",
     "aggregate": "n_cores_int_aggregate",
+    # spotfix does the same kind of work as the apply stage -- read a shard, one numpy
+    # multiply, write it -- so it sizes from the same reservation rather than inventing a
+    # key nobody sets. It only ever runs locally, where `slots()` clamps to the machine.
+    "spotfix": "n_cores_int_correct",
 }
 
 

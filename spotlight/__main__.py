@@ -60,7 +60,9 @@ def main(argv=None):
     p.add_argument("which", choices=("stats", "correct", "intensity"))
 
     p = sub.add_parser("run", help="run a whole pipeline here, without LSF")
-    p.add_argument("pipeline", choices=("basic", "intensity", "both"))
+    p.add_argument("pipeline", choices=("basic", "intensity", "both", "spotfix"))
+    p.add_argument("tiles", type=int, nargs="*",
+                   help="for `spotfix`: the setups to repair, e.g. `spotfix 126 158`")
     p.add_argument("--start-at", default=None,
                    help="resume from this stage (it is re-run, not skipped)")
     p.add_argument("--stop-after", default=None,
@@ -76,7 +78,7 @@ def main(argv=None):
     if args.stage == "run":
         from . import local
         local.run_pipeline(config.load_config(), args.pipeline, args.start_at,
-                           args.stop_after, args.dry_run)
+                           args.stop_after, args.dry_run, args.tiles)
         return
 
     if args.stage == "submit":

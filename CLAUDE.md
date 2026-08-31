@@ -387,3 +387,151 @@ and keep it off the `pipeline:` line, which `test_stage_windows` parses by stage
 covered — reverting them to a literal `8` passes the whole suite. The failure mode is an
 off-cluster local run building an 8-thread pool instead of 16–20, i.e. a performance nit,
 not a correctness bug. Not worth a source-grep test.
+
+## `spotfix`: repairing a local dimming defect in one already-corrected tile
+
+A tile sometimes goes dark over part of its volume while the tiles overlapping it hold real
+signal there. Neither flat/dark nor the per-tile gain can fix that — both are corrections a
+tile applies to *itself*, and the evidence that something is missing lives in its
+**neighbours**. So the expectation comes from the overlapping tiles resampled into this
+tile's grid, never from a model of the tile itself. That one choice is what makes the stage
+safe on dark anatomy: a genuinely dark structure is dark in the neighbours too, so nothing
+is demanded of it.
+
+    python -m spotlight run spotfix 126 158        # local, one tile at a time
+
+Reads and writes `output_intensity_path` — the corrected dataset — because it repairs a
+correction run's output. The previous version of the tile is **renamed** aside
+(`s126-t0.zarr.prespotfix`), never deleted and never overwritten in place: a rename is
+atomic on one filesystem, costs nothing for a 70 GB tile, leaves the old pyramid whole if
+the run dies, and deleting is the operation that parks indefinitely on an smbfs mount.
+Clearing old backups is left to a human who can decide how many to keep.
+
+The rule, in order:
+
+1. **expectation** — neighbour value where covered (a measurement, so it wins); else that
+   z slice's neighbour level; else the column's own healthy-depth plateau, but only where
+   the tile still shows signal. The plateau case exists because the slice level falls below
+   what a column's plateau says when the specimen ended inside the covered strips but
+   persists here; requiring signal stops a column at background demanding a 25× lift.
+2. **gate** — the neighbours locally show specimen (`local_presence`) **OR** the tile has
+   its own signal (`signal_floor`), each with a deadband. Both branches are load-bearing:
+   dropping presence collapsed the two largest fills from 172/117 DN to 11/14.
+3. **mask** — `r < EDGE_R` where `r = obs/expected`. That is the whole detection rule.
+4. **gain** — `1 + (mask × gate) × (expected/obs − 1)`, floored at 1. The gate decides
+   *whether*, `need` decides *how much*; folding them under-corrects every moderately
+   attenuated cell. A non-finite `need` falls back to 1.0, which is what keeps a tile's
+   unimaged z padding (`obs == 0`) from being amplified out of nothing.
+5. **despeckle** — median filter on the coarse gain. It does two jobs: removes isolated
+   cells *and* smooths gain magnitudes near the boundary, i.e. it contributes to the
+   feather. Moving it to binary morphology on the mask took the boundary step from 9.3% to
+   22.5% on one tile and 90.6% on another — morphology can move a hard edge, never soften
+   one.
+6. **apply** — trilinear to the output level, times `local_contrast_weight`, `np.rint`.
+
+### `EDGE_R` is a feathering width, not a detection threshold
+
+The mask ends where `r == EDGE_R`, so the gain just inside is `1/EDGE_R` and just outside is
+exactly 1: **`EDGE_R` sets the gain cliff at the edge of the correction.** Measured median
+boundary step against the owner's judgement:
+
+| `EDGE_R` | step | verdict |
+|---|---|---|
+| 0.75 | 70–105% | rolling dark band, obvious |
+| 0.90 | 17–22% | distinguishable from 0.95 |
+| 0.95 | 9–11% | indistinguishable from 0.985 — **shipped** |
+| 0.985 | 4–7% | fine |
+
+So the visibility threshold is a ~10–20% step. Growing until the deficit is only a few
+percent makes the correction *fade to nothing at its own edge*, which is the whole point.
+Judged as a hypothesis test it admits ~27% of healthy cells — irrelevant, that **is** the
+feather. Tuning it as a detection threshold walks straight back into the dark band.
+
+The config key is `spotfix_edge_step`, the discontinuity itself, because that is
+dimensionless and means the same on any dataset.
+
+### Every parameter is a length in microns or a count of noise sigma
+
+Voxel counts and ratios-of-background do not transfer. A 4:1 z:lateral experiment and a
+6.4:1 one need different bin factors for the same physical cell, and the same
+`core_r = 0.60` was 11.1σ below the healthy median on one tile and 6.9σ on another.
+
+* lengths — `spotfix_cell_um`, `spotfix_smooth_z_um` / `_lat_um`, `spotfix_presence_um`,
+  `spotfix_contrast_um`. Converted with the voxel size read from `<voxelSize>` × the level's
+  OME multiscales scale. On the mouse experiment `spotfix_smooth_z_um = 22.6` gives 9 z
+  cells; on the fly VNC one it gives 6, because a z cell there is 4.0 µm not 2.512.
+* noise — `spotfix_floor_sigma` (the signal-floor ramp top, `bg + k·bg_std`). `3*bg` was
+  4.0σ on one tile and 3.1σ on another.
+* dimensionless — `spotfix_edge_step`, `spotfix_loc_t`, `spotfix_floor_t`.
+
+The despeckle footprint is deliberately **anisotropic** (22.6 µm in z against 60.3 µm
+laterally) and the docstring that claimed those "roughly match" was wrong — in physical
+units they differ 2.7×. Sweeping it confirmed the values: more z smoothing destroys the
+large fills (a 117 DN fill collapses to 47), less lateral smoothing re-brightens sites that
+must stay dark (7 → 47 DN). It is anisotropic for the same reason z is unbinned — the defect
+changes fast along z and slowly laterally.
+
+### Scope: local dimming only, and the stage checks it
+
+The input must already be flat-field and intensity corrected. A tile uniformly a few percent
+dim is a per-tile **gain** error; correcting it here smears it into a large spatially varying
+correction. Measured: a uniform 0.93× takes a tile from 12% to 29% of its grid masked.
+
+`_precondition` therefore measures the tile's level against its neighbours where healthy and
+**refuses** outside `±0.5 × (1 − EDGE_R)`. The bound is tied to the feather width because a
+global offset that size drops half the tile below the threshold on its own, at which point
+detection cannot separate local from global. Mouse tiles measure 1.0042 and 1.0155 (fine);
+one fly VNC tile measured 0.9527 with a 5% feather — the offset *equalled* the feather.
+
+### Dead ends — measured and rejected, don't redo these
+
+* **Seeds, cores, connected-component propagation.** `spotfix` used to grow the mask from
+  clearly-dead "core" cells through the deficit field. The plain threshold `r < EDGE_R`
+  matches it on both tiles — all 14 labelled sites identical, both population medians to
+  four decimals, the anatomical hole preserved — with a ~9% larger mask that the despeckle
+  absorbs. `core_r` moved the mask by at most ±9% over a **19× range** and could never
+  constrain anyway: connectivity lets one dead cell validate an arbitrarily large component.
+* **A per-voxel nearest-neighbour gain ceiling.** Real bleed (a 1.15× cell receives 15.6×
+  from trilinear interpolation between two 30× cells) but it *was* the visible 16-voxel
+  squares — boundary step ratio 4.4–5.7 against 1.1 without it. No smooth version can
+  exist: the gain is already clamped to each cell's `need`, and trilinear interpolation
+  preserves that, so a trilinear ceiling is provably a no-op.
+* **A gain slope cap** (gain may rise at most *r*× per cell). Fixes the too-bright site
+  exactly and strangles the legitimate large fills, 189 → 40 DN. A slope bound cannot tell
+  "next to healthy because the data cuts off" from "next to healthy because of bleed".
+* **A spatially local expectation** (`expectation_3d`, fill an uncovered cell from the
+  nearest evidence rather than the z-slice median). Does **not** make `local_presence`
+  redundant, and makes judged sites worse on its own. The expectation answers "what level
+  should be here"; presence answers "is there specimen here at all", and a
+  coverage-normalised fill will interpolate a bright level into a region where the specimen
+  has ended.
+* **Physically-motivated seeding schemes** — a shadow constrained to run inward from the
+  sheet-entry edge, per-(z,x) permission pooling along the sheet, per-column axial deficit.
+  All three scored worse than the plain threshold. Four such reformulations lost in total;
+  every simplification that *worked* was one where equivalence could be proved or measured,
+  not argued from physics.
+
+### Two metrics that are biased, in opposite directions
+
+Neither should be tuned against.
+
+* **Restricted to the voxels two variants disagree about** — favours MORE correction by
+  construction, because the comparison set is chosen to contain the correction.
+* **The median over all covered voxels** — favours LESS correction, because lifting a
+  deficient population up to *match* its neighbour drags the population median rightward
+  with no voxel overshooting. This is why the variant that corrected least once scored
+  "best".
+
+Split covered voxels by their state BEFORE correction instead (healthy / deficient /
+already-brighter) and ask whether each moved. That is the framing that answers "did this
+over-brighten healthy tissue", and under it the shipped config lifts already-healthy voxels
+by ~0.6%.
+
+### Not verified
+
+The stage is tested end to end on a synthetic two-tile store (`tests/test_spotfix.py`), with
+every test mutation-checked. What has **not** run is a real tile: the algorithm was developed
+and judged in a scratch prototype, and `spotfix.py` is a reimplementation inside the package.
+Before trusting it on the real dataset, run one tile and compare against the prototype's
+output for the same setup — `_levels_in`, the pyramid rebuild, `write_group_metadata` and the
+backup/restore path have only ever seen 16³ arrays.

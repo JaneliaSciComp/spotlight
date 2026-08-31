@@ -10,6 +10,7 @@ scripts invoke. Only who loops over the units changes.
     python -m spotlight run basic
     python -m spotlight run intensity --stop-after aggregate
     python -m spotlight run both --dry-run
+    python -m spotlight run spotfix 126 158
 
 Sequential over units, on purpose. Each stage is already concurrent inside itself (asyncio
 over reads, a thread pool for the numpy) and sized to a memory budget derived from the
@@ -27,6 +28,10 @@ __all__ = ["PIPELINES", "STAGES", "run_pipeline", "apply_basic_for"]
 # scheduler, because the dependencies are a straight line.
 PIPELINES = {
     "basic": ["emptiness", "stats", "qstack", "basic", "correct"],
+    # One stage over the tiles named on the command line. Not part of the other pipelines:
+    # spotfix repairs the OUTPUT of a correction run, so it only makes sense afterwards and
+    # only on tiles someone has looked at.
+    "spotfix": ["spotfix"],
     "intensity": ["emptiness", "int-stats", "int-aggregate", "correct"],
     "both": ["emptiness", "stats", "qstack", "basic", "int-stats", "int-aggregate",
              "correct"],
@@ -36,7 +41,8 @@ STAGES = sorted({s for v in PIPELINES.values() for s in v})
 
 # Which correction each pipeline ends with. `both` reads the raw store once and applies
 # flat/dark and the per-tile gain together, which is the whole reason to prefer it.
-_CORRECT_MODE = {"basic": "basic", "intensity": "intensity", "both": "both"}
+_CORRECT_MODE = {"basic": "basic", "intensity": "intensity", "both": "both",
+                 "spotfix": "none"}
 
 
 def apply_basic_for(pipeline):
@@ -74,12 +80,15 @@ def _plan(pipeline, start_at, stop_after):
     return stages[lo:hi]
 
 
-def _units(cfg, stage, mode):
+def _units(cfg, stage, mode, tiles=None):
     """What this stage iterates, as a list of (label, callable)."""
     from . import basic, correct, qstack, quantiles, scripts, tilestats, aggregate
 
-    cameras = range(_config.num_cameras(cfg))
-    setups = [s for group in _config.camera_setups(cfg) for s in group]
+    # Lazy, both of them: `spotfix` is told its tiles on the command line, so it must not
+    # require the camera/setup config that every other stage iterates over (`num_cameras`
+    # goes through `camera_setups` too).
+    cameras = lambda: range(_config.num_cameras(cfg))
+    setups = lambda: [s for group in _config.camera_setups(cfg) for s in group]
 
     if stage == "emptiness":
         return [("all tiles", lambda: scripts.ensure_emptiness(cfg))]
@@ -87,25 +96,31 @@ def _units(cfg, stage, mode):
         # One call per camera covering EVERY chunk -- the bsub array splits this only so
         # LSF can spread it; in one process the split would just add overhead.
         return [(f"camera {c + 1}", lambda c=c: quantiles.calculate_camera_stats(cfg, c))
-                for c in cameras if not qstack.raw_stack_mode(cfg, c,
-                                                              scale=cfg["basic_stats_level"])]
+                for c in cameras() if not qstack.raw_stack_mode(cfg, c,
+                                                                scale=cfg["basic_stats_level"])]
     if stage == "qstack":
         return [("all cameras", lambda: qstack.save_qstack(cfg))]
     if stage == "basic":
         return [(f"camera {c + 1}", lambda c=c: basic.run_basic_camera(cfg, c))
-                for c in cameras]
+                for c in cameras()]
     if stage == "int-stats":
-        return [(f"setup {s}", lambda s=s: tilestats.cmd_stats(cfg, s)) for s in setups]
+        return [(f"setup {s}", lambda s=s: tilestats.cmd_stats(cfg, s)) for s in setups()]
     if stage == "int-aggregate":
         return [("all tiles", lambda: aggregate.cmd_aggregate(cfg))]
     if stage == "correct":
         return [(f"setup {s}", lambda s=s: correct.apply_correction_chunked(cfg, s, mode))
-                for s in setups]
+                for s in setups()]
+    if stage == "spotfix":
+        from . import spotfix
+        if not tiles:
+            raise SystemExit("spotfix needs the tiles to fix: "
+                             "python -m spotlight run spotfix 126 158")
+        return [(f"setup {s}", lambda s=s: spotfix.fix_tile(cfg, s)) for s in tiles]
     raise ValueError(f"unknown stage {stage!r}")
 
 
 def run_pipeline(cfg=None, pipeline="basic", start_at=None, stop_after=None,
-                 dry_run=False):
+                 dry_run=False, tiles=None):
     """Run `pipeline` end to end in this process.
 
     `--start-at` / `--stop-after` exist because the natural checkpoints are inspection
@@ -127,7 +142,7 @@ def run_pipeline(cfg=None, pipeline="basic", start_at=None, stop_after=None,
     # announced False for a pipeline whose whole point is applying BaSiC.
     print(f"apply_basic={cfg['apply_basic']} for the stages that read it "
           f"(int-stats, int-aggregate); the correct stage sets its own from mode={mode}")
-    plan = [(s, _units(cfg, s, mode)) for s in stages]
+    plan = [(s, _units(cfg, s, mode, tiles)) for s in stages]
     total = sum(len(u) for _, u in plan)
     print(f"{total} unit(s) across {len(stages)} stage(s), sequential, in this process")
     if dry_run:
