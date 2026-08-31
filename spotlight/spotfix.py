@@ -355,8 +355,39 @@ def _presence(nbfg, covf, k, min_cov=0.05, lo=0.03, hi=0.12):
     return np.clip((frac - lo) / max(hi - lo, 1e-6), 0.0, 1.0)
 
 
+def _lateral_fill(nbo, covf, min_cov=0.05, scales=(3, 5, 9, 15, 25), min_den=0.02):
+    """Neighbour level filled from the nearest covered cells LATERALLY, in-plane only.
+
+    Two choices, both against the obvious:
+
+    * evidence is `covf >= min_cov` ALONE, with no foreground requirement. A covered but
+      BLACK neighbour is evidence OF DARKNESS, not an absence of information. Requiring
+      foreground borrows only from bright cells, which is a stronger survivorship bias than
+      the slice median it replaces -- measured, it took the expectation at one background
+      cell from 65 DN to 177 rather than down to the 9 DN its own overlaps read.
+    * the kernel is IN-PLANE (z extent 1). The defect changes fast along z and slowly
+      laterally, which is why the gain grid is unbinned in z; a kernel 8x deeper in z than
+      wide (the natural "physically isotropic" choice) pools +-12 z cells and drags in
+      bright cells from other depths, giving 55 DN instead of 11.
+    """
+    from scipy.ndimage import uniform_filter
+    ev = covf >= min_cov
+    out = np.where(ev, nbo, np.nan).astype(np.float64)
+    src = np.where(ev, nbo, 0.0).astype(np.float32)
+    evf = ev.astype(np.float32)
+    for k in scales:
+        need = np.isnan(out)
+        if not need.any():
+            break
+        num = uniform_filter(src, size=(1, k, k), mode="nearest")
+        den = uniform_filter(evf, size=(1, k, k), mode="nearest")
+        ok = need & (den > min_den)
+        out[ok] = num[ok] / den[ok]
+    return np.nan_to_num(out).astype(np.float32)
+
+
 def expectation(obs, nbo, covf, nbfg, bg, signal, min_cov=0.05, min_fg=0.10,
-                collapse=0.5, floor_t=0.25, mult=3.0):
+                collapse=0.5, floor_t=0.25, mult=3.0, cap_local=True):
     """What should this cell read? One rule, three cases:
 
       1. a neighbour covers it        -> the neighbour's own value (a measurement; wins)
@@ -373,6 +404,16 @@ def expectation(obs, nbo, covf, nbfg, bg, signal, min_cov=0.05, min_fg=0.10,
     for i in range(level.shape[0]):
         if have[i].any():
             level[i][~have[i]] = np.median(nbo[i][have[i]])
+    if cap_local:
+        # Local evidence may only LOWER the expectation, never raise it. A z slice is often
+        # bimodal -- measured at one plane, 296 covered cells split between ~9 DN and
+        # 218-268 DN, so their median lands at 65 and describes neither population. Where
+        # the nearby overlaps are dark that median is a survivorship artifact and the local
+        # value is a direct measurement; where they are bright the median was already right,
+        # and replacing it outright regressed five judged sites (one from 33 to 119 DN).
+        # Asymmetric, so it fixes the first case and cannot touch the second.
+        lat = _lateral_fill(nbo, covf, min_cov=min_cov)
+        level = np.where(lat > 0, np.minimum(level, lat), level)
     with np.errstate(invalid="ignore"):
         plateau = np.nanmedian(np.where(obs > mult * bg, obs, np.nan), axis=0)
     plateau = np.nan_to_num(plateau)[None, :, :]

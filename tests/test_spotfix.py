@@ -382,3 +382,51 @@ def test_nbfg_asks_whether_the_NEIGHBOUR_SHOWS_FOREGROUND_not_whether_it_is_pres
     cov2 = np.zeros((1, 4, 4), bool)
     _o, _n, covf2, nbfg2 = spotfix._coarsen(a, nb, cov2, cov2 & (nb >= 256.0), 4, 4)
     assert covf2[0, 0, 0] == 0.0 and nbfg2[0, 0, 0] == 0.0
+
+
+def test_local_black_overlap_lowers_the_expectation_but_bright_overlap_cannot_raise_it():
+    """The asymmetric cap. A z slice is often bimodal, so its median describes neither
+    population: measured at one plane, 296 covered cells split between ~9 DN and 218-268 DN
+    and the median landed at 65. Where the nearby overlaps are dark that median is a
+    survivorship artifact; where they are bright it was already right.
+    """
+    # FIVE z planes, so an "isotropic in physical space" kernel (8x deeper in z than wide,
+    # the natural-looking choice) can be told apart from an in-plane one: at z=2 the left
+    # side's overlaps are dark, but at z=0 and z=4 the SAME lateral position is bright, so a
+    # deep kernel pools them and the expectation comes out high again. Measured on real
+    # data: 55 DN from a deep kernel against 11 DN in-plane.
+    #
+    # Within the test plane, wide enough that the NEAREST evidence is unambiguous:
+    #   x 0-5   covered, BLACK (9 DN)
+    #   x 6     uncovered, immediately beside the black region   <- must be capped down
+    #   x 9     uncovered, immediately beside the bright region   <- must NOT be raised
+    #   x 10-15 covered, BRIGHT (250 DN)
+    Z = 5
+    nbo = np.zeros((Z, 3, 16), np.float32)
+    covf = np.zeros((Z, 3, 16), np.float32)
+    for z in range(Z):
+        nbo[z, :, 0:6] = 9.0 if z == 2 else 250.0     # dark only in the plane under test
+        covf[z, :, 0:6] = 1.0
+        nbo[z, :, 10:16] = 250.0
+        covf[z, :, 10:16] = 1.0
+    obs = np.full((Z, 3, 16), 5.0, np.float32)
+    nbfg = np.where(nbo >= 100, 1.0, 0.0).astype(np.float32)
+    signal = np.zeros((Z, 3, 16), np.float32)
+    capped = spotfix.expectation(obs, nbo, covf, nbfg, bg=10.0, signal=signal,
+                                 cap_local=True)
+    plain = spotfix.expectation(obs, nbo, covf, nbfg, bg=10.0, signal=signal,
+                                cap_local=False)
+    slice_median = np.median(nbo[2][covf[2] >= 0.05])       # ~129, between the two modes
+    assert plain[2, 1, 6] == pytest.approx(slice_median), \
+        "without the cap an uncovered cell takes the whole slice's median"
+    assert capped[2, 1, 6] < 60.0, \
+        ("a cell whose nearby overlaps read 9 DN must not inherit the bimodal slice median "
+         f"{slice_median:.1f}: got {capped[2, 1, 6]:.1f}")
+    assert capped[2, 1, 9] == pytest.approx(plain[2, 1, 9]), \
+        ("beside the BRIGHT region the slice median was already the lower of the two, so "
+         "the cap must leave it alone")
+    # covered cells keep their own measured value either way -- the cap is only a fallback
+    assert capped[2, 1, 0] == pytest.approx(9.0)
+    assert capped[2, 1, 15] == pytest.approx(250.0)
+    # and the cap can only lower: nowhere does it exceed the uncapped field
+    assert (capped <= plain + 1e-6).all(), "the cap must never raise the expectation"
