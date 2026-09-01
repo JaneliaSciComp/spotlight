@@ -169,15 +169,15 @@ def _write(path, text):
     print(f"wrote {path}")
 
 
-def _setup_selector(cfg):
+def _setup_selector(cfg, setups=None):
     """(N, prefix, arg) for a per-setup array job.
 
-    With explicit `setup_ids` the array index selects from a shell array, because the ids
-    need not be contiguous; otherwise it is just the index minus one.
+    With explicit `setup_ids` -- or an explicit `setups` list, which a copy run passes -- the
+    array index selects from a shell array, because the ids need not be contiguous;
+    otherwise it is just the index minus one.
     """
-    ids = cfg.get("setup_ids", [])
-    if ids:
-        flat = [s for group in ids for s in group]
+    flat = list(setups) if setups else [s for group in cfg.get("setup_ids", []) for s in group]
+    if flat:
         return len(flat), f"S=({' '.join(str(s) for s in flat)}); ", "${S[$(($LSB_JOBINDEX-1))]}"
     return cfg["last_setup"] + 1, "", "$(($LSB_JOBINDEX-1))"
 
@@ -451,7 +451,7 @@ def _dep(ids):
     return " && ".join(f"done(${v})" for v in ids) or None
 
 
-def _stage_jobs(cfg, stage, mode, apply_basic, dep):
+def _stage_jobs(cfg, stage, mode, apply_basic, dep, tiles=None):
     """`(bsub lines, shell variable names)` for one pipeline stage.
 
     `dep` is the `-w` expression this stage waits on. A stage that submits nothing returns
@@ -499,16 +499,21 @@ def _stage_jobs(cfg, stage, mode, apply_basic, dep):
                        f"{env}{runner()} int-aggregate", **sub)],
                 ["J_INT_AGGREGATE"])
     if stage == "correct":
-        n, prefix, arg = _setup_selector(cfg)
-        name, suffix = (("spotlight-correct", "correct") if mode == "basic"
-                        else ("spotlight-int-correct", "ic"))
+        n, prefix, arg = _setup_selector(cfg, tiles)
+        # Its own job name and log suffix, so a copy run's logs never sit in the same
+        # `_ic_*.txt` namespace as the correction whose output it is writing into.
+        name, suffix = {"basic": ("spotlight-correct", "correct"),
+                        "copy": ("spotlight-copy", "cp"),
+                        "copy-basic": ("spotlight-copy", "cp"),
+                        }.get(mode, ("spotlight-int-correct", "ic"))
         return ([_bsub(cfg, name, _config.stage_cores(cfg, mode), suffix,
                        f"{prefix}{runner()} correct {arg} --mode {mode}", array=n, **sub)],
                 ["J_CORRECT"])
     raise ValueError(f"unknown stage {stage!r}")
 
 
-def write_pipeline_script(cfg=None, pipeline="both", start_at=None, stop_after=None):
+def write_pipeline_script(cfg=None, pipeline="both", start_at=None, stop_after=None,
+                          tiles=None):
     """Write one script that submits a whole pipeline, chained on LSF job ids.
 
     The same stage list `local.run_pipeline` walks in one process, submitted instead: each
@@ -536,8 +541,24 @@ def write_pipeline_script(cfg=None, pipeline="both", start_at=None, stop_after=N
     mode = local._CORRECT_MODE[pipeline]
     apply_basic = local.apply_basic_for(pipeline)
 
+    from .correct import COPY_MODES
+    if mode in COPY_MODES:
+        if not tiles:
+            raise SystemExit(f"{pipeline} needs the tiles to copy, as ids or ranges: "
+                             f"python -m spotlight run {pipeline} 200-395 --cluster")
+        # Checked HERE, before anything is submitted: a typo in a hand-entered range is
+        # otherwise 200 array elements each dying on a store that was never written.
+        tiles = _config.check_setups_in_xml(cfg, tiles)
+        print(f"{pipeline}: {len(tiles)} tile(s) {tiles[0]}..{tiles[-1]}, verified against "
+              f"{cfg['dataset_xml']}")
+    elif tiles:
+        tiles = _config.check_setups_in_xml(cfg, tiles)
+
     ensure_log_dirs(cfg)
-    ensure_emptiness(cfg)
+    # A copy measures nothing, so it needs no emptiness pass -- and on a fresh dataset that
+    # would be a full rescan of every tile to produce numbers this run never reads.
+    if mode not in COPY_MODES:
+        ensure_emptiness(cfg)
 
     out = [
         "#!/bin/bash",
@@ -571,7 +592,7 @@ def write_pipeline_script(cfg=None, pipeline="both", start_at=None, stop_after=N
 
     prev, summary = [], []
     for stage in stages:
-        lines, ids = _stage_jobs(cfg, stage, mode, apply_basic, _dep(prev))
+        lines, ids = _stage_jobs(cfg, stage, mode, apply_basic, _dep(prev), tiles)
         if not lines:
             continue                      # emptiness, or a stats pass with no camera
         out.append(f"# ─── {stage} " + "─" * max(0, 60 - len(stage)))
@@ -594,5 +615,10 @@ def write_pipeline_script(cfg=None, pipeline="both", start_at=None, stop_after=N
 
     path = f"bsub_pipeline_{pipeline}.sh"
     _write(path, "\n".join(out) + "\n")
-    print(f"apply_basic={apply_basic} for int-stats/int-aggregate; correct --mode {mode}")
+    if mode in COPY_MODES:
+        print(f"correct --mode {mode}: no arithmetic, "
+              f"{'BaSiC' if mode == 'copy-basic' else 'intensity'} I/O pair")
+    else:
+        print(f"apply_basic={apply_basic} for int-stats/int-aggregate; "
+              f"correct --mode {mode}")
     print(f"run it once, from this directory:  ./{path}")

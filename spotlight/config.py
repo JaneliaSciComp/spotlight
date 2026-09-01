@@ -24,6 +24,7 @@ from .formats import FORMATS, OUTPUT_FORMATS
 __all__ = [
     "load_config", "set_config", "set_basic_config", "basic_params",
     "camera_setups", "num_cameras", "basic_view", "config_path", "stage_cores",
+    "parse_setups", "check_setups_in_xml",
 ]
 
 TABLE = "spotlight"
@@ -193,6 +194,10 @@ CORES_KEY = {
     # multiply, write it -- so it sizes from the same reservation rather than inventing a
     # key nobody sets. It only ever runs locally, where `slots()` clamps to the machine.
     "spotfix": "n_cores_int_correct",
+    # A copy is the apply stage with the arithmetic removed -- same reads, same shard
+    # writes, same pyramid -- so it sizes from the same reservation.
+    "copy": "n_cores_int_correct",
+    "copy-basic": "n_cores_int_correct",
 }
 
 
@@ -410,6 +415,61 @@ def tile_list(cfg):
     if ids:
         return [s for group in ids for s in group]
     return list(range(cfg["last_setup"] + 1))
+
+
+def parse_setups(values):
+    """Setup ids from command-line words: `126`, `200-395`, `1,2,7-9`.
+
+    Ranges are INCLUSIVE, because these are view ids read off a BigStitcher xml where
+    "200-395" names both endpoints. Deduplicated and sorted, so a repeated or overlapping
+    range copies a tile once rather than racing itself.
+    """
+    out = set()
+    for word in values or []:
+        for part in str(word).split(","):
+            part = part.strip()
+            if not part:
+                continue
+            lo, dash, hi = part.partition("-")
+            try:
+                lo = int(lo)
+                hi = int(hi) if dash else lo
+            except ValueError:
+                raise SystemExit(f"cannot read {part!r} as a setup id or range; "
+                                 "expected forms are 126, 200-395, 1,2,7-9")
+            if hi < lo:
+                raise SystemExit(f"empty range {part!r}: {hi} is below {lo}")
+            out.update(range(lo, hi + 1))
+    return sorted(out)
+
+
+def check_setups_in_xml(cfg, setups):
+    """Return `setups` if every one is a real view in `dataset_xml`, else raise SystemExit.
+
+    Worth a hard stop rather than a warning: a setup absent from the xml is a tile nothing
+    downstream can reference, and one listed under <MissingViews> has no data to read. Both
+    are typos in a hand-entered range, and the failure without this check is 200 array
+    elements each dying on a missing store -- after the array has been submitted.
+    """
+    import xml.etree.ElementTree as ET
+
+    path = cfg.get("dataset_xml")
+    if not path or not Path(path).is_file():
+        raise SystemExit(f"cannot check the requested setups: dataset_xml "
+                         f"({path or 'unset'}) is not readable")
+    root = ET.parse(path).getroot()
+    known = {int(vs.findtext("id")) for vs in root.findall(".//ViewSetups/ViewSetup")}
+    missing = {int(mv.get("setup")) for mv in root.findall(".//MissingViews/MissingView")}
+    unknown = sorted(set(setups) - known)
+    absent = sorted(set(setups) & missing)
+    if unknown:
+        raise SystemExit(f"setup(s) {unknown} are not ViewSetups in {path} "
+                         f"(it has {len(known)}, "
+                         f"{min(known, default='-')}..{max(known, default='-')})")
+    if absent:
+        raise SystemExit(f"setup(s) {absent} are listed under <MissingViews> in {path}, "
+                         "so they have no data to copy")
+    return list(setups)
 
 
 def camera_groups(cfg):

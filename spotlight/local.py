@@ -11,6 +11,7 @@ scripts invoke. Only who loops over the units changes.
     python -m spotlight run intensity --stop-after aggregate
     python -m spotlight run both --dry-run
     python -m spotlight run spotfix 126 158
+    python -m spotlight run copy 200-395 --cluster
 
 `--cluster` takes the same pipeline names to `scripts.write_pipeline_script`, which submits
 these stages to LSF chained on job ids instead of walking them here. The pipeline
@@ -37,6 +38,12 @@ PIPELINES = {
     # spotfix repairs the OUTPUT of a correction run, so it only makes sense afterwards and
     # only on tiles someone has looked at.
     "spotfix": ["spotfix"],
+    # Also tile-scoped: rewrite the named tiles into the corrected dataset's layout with no
+    # arithmetic, for the channels that need no correction but still have to live in the
+    # output store. `copy` targets the intensity pair, `copy-basic` the BaSiC pair -- pick
+    # the one whose output the corrected channels went to.
+    "copy": ["correct"],
+    "copy-basic": ["correct"],
     "intensity": ["emptiness", "int-stats", "int-aggregate", "correct"],
     "both": ["emptiness", "stats", "qstack", "basic", "int-stats", "int-aggregate",
              "correct"],
@@ -47,7 +54,13 @@ STAGES = sorted({s for v in PIPELINES.values() for s in v})
 # Which correction each pipeline ends with. `both` reads the raw store once and applies
 # flat/dark and the per-tile gain together, which is the whole reason to prefer it.
 _CORRECT_MODE = {"basic": "basic", "intensity": "intensity", "both": "both",
-                 "spotfix": "none"}
+                 "spotfix": "none", "copy": "copy", "copy-basic": "copy-basic"}
+
+# Pipelines that take their tiles from the command line instead of the whole setup list.
+# Both would do the wrong thing silently over a default of "every tile": spotfix would
+# repair tiles nobody reported, and a copy would overwrite the corrected channels with
+# uncorrected voxels.
+TILE_PIPELINES = ("spotfix", "copy", "copy-basic")
 
 
 def apply_basic_for(pipeline):
@@ -113,8 +126,18 @@ def _units(cfg, stage, mode, tiles=None):
     if stage == "int-aggregate":
         return [("all tiles", lambda: aggregate.cmd_aggregate(cfg))]
     if stage == "correct":
+        # `tiles` narrows any pipeline's correct stage -- useful for redoing one tile -- and
+        # is REQUIRED for a copy, whose whole input is a tile list. Defaulting a copy to
+        # every setup would overwrite the corrected channels with uncorrected voxels.
+        if mode in correct.COPY_MODES and not tiles:
+            raise SystemExit(f"{mode} needs the tiles to copy, as ids or ranges: "
+                             f"python -m spotlight run {mode} 200-395")
+        # Only an explicitly named list is checked against the xml. The full setup list
+        # comes from the config, and refusing a whole correction run over it would be a new
+        # failure mode for pipelines that have never needed the xml to be complete.
+        chosen = _config.check_setups_in_xml(cfg, tiles) if tiles else setups()
         return [(f"setup {s}", lambda s=s: correct.apply_correction_chunked(cfg, s, mode))
-                for s in setups()]
+                for s in chosen]
     if stage == "spotfix":
         from . import spotfix
         if not tiles:

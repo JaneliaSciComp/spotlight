@@ -42,9 +42,12 @@ def main(argv=None):
 
     p = sub.add_parser("correct", help="correct one setup: flat/dark, intensity, or both")
     p.add_argument("setup", type=int, nargs="?", default=None)
-    p.add_argument("--mode", choices=("auto", "basic", "intensity", "both"), default="auto",
+    p.add_argument("--mode", choices=("auto", "basic", "intensity", "both",
+                                      "copy", "copy-basic"), default="auto",
                    help="auto (default) picks `both` when the BaSiC fields and the "
-                        "intensity target are both present, else whichever one is")
+                        "intensity target are both present, else whichever one is. "
+                        "`copy`/`copy-basic` apply nothing at all and rewrite the tile "
+                        "into the corrected dataset's layout")
 
     sub.add_parser("emptiness", help="measure background level, threshold, empty fractions")
 
@@ -60,9 +63,14 @@ def main(argv=None):
     p.add_argument("which", choices=("stats", "correct", "intensity"))
 
     p = sub.add_parser("run", help="run a whole pipeline here, without LSF")
-    p.add_argument("pipeline", choices=("basic", "intensity", "both", "spotfix"))
-    p.add_argument("tiles", type=int, nargs="*",
-                   help="for `spotfix`: the setups to repair, e.g. `spotfix 126 158`")
+    p.add_argument("pipeline", choices=("basic", "intensity", "both", "spotfix",
+                                        "copy", "copy-basic"))
+    # Strings, not ints: these accept ranges (`200-395`) as well as ids, because a channel
+    # to copy is a contiguous block of view ids in the xml. `config.parse_setups` flattens.
+    p.add_argument("tiles", nargs="*", metavar="TILE",
+                   help="setups as ids or inclusive ranges, e.g. `126 158` or `200-395`. "
+                        "Required for `spotfix` (tiles to repair) and `copy` (tiles to "
+                        "rewrite uncorrected); narrows the correct stage of the others")
     p.add_argument("--start-at", default=None,
                    help="resume from this stage (it is re-run, not skipped)")
     p.add_argument("--stop-after", default=None,
@@ -80,15 +88,16 @@ def main(argv=None):
     from . import config
 
     if args.stage == "run":
+        tiles = config.parse_setups(args.tiles)
         # Same pipeline names either way: `--cluster` only changes who walks the stages.
         if args.cluster:
             from . import scripts
             scripts.write_pipeline_script(config.load_config(), args.pipeline,
-                                          args.start_at, args.stop_after)
+                                          args.start_at, args.stop_after, tiles)
             return
         from . import local
         local.run_pipeline(config.load_config(), args.pipeline, args.start_at,
-                           args.stop_after, args.dry_run, args.tiles)
+                           args.stop_after, args.dry_run, tiles)
         return
 
     if args.stage == "submit":

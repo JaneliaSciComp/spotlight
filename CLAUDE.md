@@ -197,6 +197,74 @@ name reach the same answer.
 Note this is not a bug in the `both` chain even without the env var — `basic` runs before
 `int-stats`, so the fields exist by the time detection runs. It is `intensity` that needs it.
 
+## `copy`: the channels that need no correction still have to be in the output store
+
+    python -m spotlight run copy 200-395 --cluster     # intensity pair
+    python -m spotlight run copy-basic 200-395         # BaSiC pair
+
+A dataset's other channels may need no correction at all, but they cannot simply be left in
+the input store: the corrected channels are indexed by a dataset.xml that points at the
+OUTPUT, so a channel missing from there is a channel nothing can resolve. `copy` rewrites
+the named tiles into the corrected layout -- same chunking, sharding, compression, pyramid
+and group metadata -- with no arithmetic.
+
+**It cost almost no new code, which is the point.** `correct._run` already had the path:
+`shard_corr is None` means the shards copy straight through, and the comment beside it said
+"which `resolve_mode` has already ruled out". So the entire feature is `resolve_mode`
+returning early for the copy modes, plus a branch in `_view` for the second I/O pair. The
+read, the shard loop, the transaction-per-shard write, the pyramid and
+`write_group_metadata` are all shared with a correction, which is exactly what makes the
+output layout identical rather than merely similar.
+
+`_run` now raises if `shard_corr` is None for a non-copy mode. That assertion is what keeps
+the old comment's guarantee once the "ruled out" is no longer true for every mode.
+
+### Two modes, differing only in the I/O pair
+
+`copy` reads and writes the intensity pair, `copy-basic` the BaSiC pair. Nothing else
+differs. Pick the one whose output the corrected channels went to -- `intensity` and `both`
+write `output_intensity_path`, `basic` writes `output_basic_path`. In most configs here the
+two pairs are the same paths anyway.
+
+### `apply_basic` is forced off, and that is load-bearing in three ways
+
+A copy applies no flat/dark either, so `_view` sets `apply_basic = False` for both modes.
+That single line overrides the toml, the auto-detection, AND `SPOTLIGHT_APPLY_BASIC` from a
+chained cluster run — all three of which will say True on a dataset whose corrected channels
+went through BaSiC, which is every dataset this mode is for.
+
+There is a second guard behind it: `fields.basic_model` returns None whenever `apply_basic`
+is off, so adding `"copy"` to the `mode in ("basic", "both")` test that calls it is a
+survivable mutation. Both guards are wanted; the test that matters is the one with real
+flat/dark TIFFs on disk and `apply_basic = true` in the toml, because an experiment without
+fields cannot tell the difference.
+
+### Tiles are required, and checked against the xml before anything is submitted
+
+`copy` has no sensible default tile set. Defaulting to the whole setup list would overwrite
+the corrected channels with uncorrected voxels, so a copy with no tiles is refused on both
+routes.
+
+Ranges are inclusive (`200-395`), because these are view ids read off a BigStitcher xml
+where that names both endpoints. `config.check_setups_in_xml` then refuses any setup that is
+not a `<ViewSetup>` or that sits under `<MissingViews>`. The check runs at GENERATION time
+for `--cluster`: a typo in a hand-entered range is otherwise 200 array elements each dying
+on a store that was never written, discovered after the array is already queued.
+
+Deliberately NOT extended to the correction pipelines' full setup list. That list comes from
+the config, and refusing a whole `both` run because the xml disagrees with `last_setup`
+would be a new failure mode for pipelines that have never needed the xml to be complete.
+
+### Its own log namespace, and no emptiness pass
+
+Job name `spotlight-copy`, log suffix `_cp_*.txt` — not `_ic_*`, so a copy run's logs never
+land in the namespace of the correction whose output it is writing into (and the
+group-by-execution-host recipe above keeps working on either).
+
+The `copy` pipeline is `["correct"]` alone. No emptiness: a copy measures nothing, and on a
+fresh dataset `ensure_emptiness` would rescan every tile to produce numbers this run never
+reads.
+
 ## A hung element is usually a hung HOST, not a hung code path
 
 `mouse_hipp_3_channel`, job `153471857` (`int-apply`, `[3-6,65-560]`, 30 slots each).

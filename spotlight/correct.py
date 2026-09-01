@@ -17,8 +17,15 @@ Three modes, all through the same shard loop and the same kernel:
                 data before the intensity rescale ever sees it. Requires
                 `input_intensity_path == input_basic_path` (the RAW store).
 
+Plus two that correct NOTHING, `copy` and `copy-basic`, which rewrite a tile into the
+same layout a corrected tile gets -- chunking, sharding, pyramid, group metadata -- with
+the kernel skipped entirely. They exist for the channels of a dataset that need no
+correction: those tiles still have to live in the output store, or the dataset.xml the
+corrected tiles are indexed by cannot resolve them. The two differ only in which
+configured I/O pair they use, and both force `apply_basic` off.
+
 `auto` picks `both` when the BaSiC fields and the intensity target are both present,
-otherwise whichever one is.
+otherwise whichever one is. `auto` never picks a copy -- copying is always asked for.
 
 With `apply_basic` on, `int-stats` and `int-aggregate` correct the voxels THEY read too.
 They have to: the split, the per-tile foreground mean/std and the overlap medians the gain
@@ -56,9 +63,20 @@ from .tilestats import _classify, limits
 from . import config as _config
 from . import stores
 
-__all__ = ["apply_correction_chunked", "apply_correction", "resolve_mode", "MODES"]
+__all__ = ["apply_correction_chunked", "apply_correction", "resolve_mode", "MODES",
+           "COPY_MODES"]
 
-MODES = ("auto", "basic", "intensity", "both")
+# Rewrite a tile with NO arithmetic at all, into the corrected dataset's layout: same
+# chunking, sharding, compression, pyramid and group metadata as a corrected tile. For the
+# channels of a dataset that need no correction -- they still have to live in the output
+# store, or the dataset.xml the corrected tiles are indexed by cannot resolve them.
+#
+# Two, differing ONLY in which configured I/O pair they use, because that is the one thing
+# a copy has to get right: `copy` reads and writes the intensity pair (where `intensity`
+# and `both` put their output), `copy-basic` the BaSiC pair. Both leave `apply_basic` off
+# -- a copy applies no flat/dark either.
+COPY_MODES = ("copy", "copy-basic")
+MODES = ("auto", "basic", "intensity", "both") + COPY_MODES
 
 # Flat-field values at or below this are replaced by it. The flat field is normalised to
 # mean 1, so anything three orders of magnitude under that is not a measurement -- it is
@@ -99,6 +117,10 @@ def resolve_mode(cfg, setup, requested="auto"):
     """Which corrections this run applies, and a clear error when it cannot."""
     if requested not in MODES:
         raise ValueError(f"mode must be one of {MODES}, got {requested!r}")
+    # Before the field/target probes, not after: a copy needs neither, and requiring them
+    # would make copying an uncorrected channel depend on a correction it never applies.
+    if requested in COPY_MODES:
+        return requested
     has_fields = _has_basic_fields(cfg, setup)
     has_target = target_path(cfg).exists()
 
@@ -134,6 +156,8 @@ def _view(cfg, mode):
     """
     if mode == "basic":
         return {**_config.basic_view(cfg), "apply_basic": True}
+    if mode == "copy-basic":
+        return {**_config.basic_view(cfg), "apply_basic": False}
     view = {**cfg, "apply_basic": mode == "both"}
     if mode == "both":
         raw, basic_in = view.get("input_intensity_path"), cfg.get("input_basic_path")
@@ -303,10 +327,15 @@ async def _run(cfg, setup, requested):
     else:
         imode, thr, mean_i, scale_i, target_mean = "none", 0, 0.0, 1.0, 0.0
 
-    # None only when there is nothing to do at all, in which case shards copy straight
-    # through -- which `resolve_mode` has already ruled out.
+    # None means the shards copy straight through, which is exactly what a `copy` mode
+    # wants -- the read, the shard write, the pyramid and the group metadata are shared
+    # with a correction, and only the kernel call is skipped. For every other mode
+    # `resolve_mode` has already ruled this out.
     shard_corr = (None if basic is None and imode == "none"
                   else ShardCorrection(basic, imode, thr, mean_i, scale_i, target_mean))
+    if shard_corr is None and mode not in COPY_MODES:
+        raise RuntimeError(f"mode={mode} resolved to no correction at all for setup "
+                           f"{setup}; this is a bug in resolve_mode")
 
     if view["output_format"] == "tiff":
         await _write_tiff(view, setup, mode, src_c, zyx, dtype_name, shard_corr)
