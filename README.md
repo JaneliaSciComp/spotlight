@@ -41,7 +41,9 @@ sp.set_config(
     input_basic_path  = "/path/to/data/dataset.ome.zarr",   # the store BaSiC reads
     output_basic_path = "/path/to/basic_corrected.ome.zarr",# the store `correct` writes
     results_root      = "/path/to/results",
-    format            = "zarr3",       # zarr2 | zarr3 | zarr3_unsharded | n5
+    dataset_xml       = "/path/to/data/dataset.xml",  # tile overlaps, for the gain solve
+    input_format      = "zarr3",  # zarr2 | zarr3 | zarr3_unsharded | zarr3_zyx | zarr3_raw | n5
+    output_format     = "zarr3",  # same list, plus tiff (output only)
     last_setup        = 8,
     setups_per_camera = 9,
     chunk_size        = [128, 128, 64],
@@ -57,42 +59,46 @@ See later in this README for a discussion regarding parameter choices.
 
 ## Workflow
 
-### Cluster-driven Workflow
-
-#### Full pipeline:
-```python
-sp.create_quartile_histograms()               # -> bsub_command.sh      (submit it, wait)
-sp.save_qstack()                              # -> qstacks/camera{N}.tiff  (inspect these)
-sp.run_basic()                                # -> results_root/camera{N}/{Flat,Dark}-field.tif
-sp.create_intensity_correction_script()       # -> bsub_int_stats.sh, bsub_int_aggregate.sh, bsub_int_correct.sh   (submit in order, wait for each before submitting the next)
-```
-
-#### BaSiC-only:
-```python
-sp.create_quartile_histograms()   # -> bsub_command.sh      (submit it, wait)
-sp.save_qstack()                  # -> qstacks/camera{N}.tiff  (inspect these)
-sp.run_basic()                    # -> results_root/camera{N}/{Flat,Dark}-field.tif
-sp.write_correction_script()      # -> bsub_correction.sh   (submit it)
-```
-
-#### Intensity-only:
-```python
-sp.create_intensity_correction_script()       # -> bsub_int_stats.sh, bsub_int_aggregate.sh, bsub_int_correct.sh   (submit in order, wait for each before submitting the next)
-```
-
-### Local Workflow
-
-The `bsub` scripts above exist to spread the work across a cluster. On a workstation, or
-for a dataset small enough to sit on one machine, run the whole thing in one process:
+One command runs a whole pipeline in this process. `--cluster` writes a single `bsub`
+script for the same stages instead, chained on LSF job ids — nothing is submitted until
+you run that script, so it is its own dry run.
 
 ```bash
 python -m spotlight run basic        # emptiness, stats, qstack, basic, correct
 python -m spotlight run intensity    # emptiness, int-stats, int-aggregate, correct
 python -m spotlight run both         # both corrections, applied in ONE pass
-python -m spotlight run both --dry-run          # list the stages and units first
+
+python -m spotlight run both --cluster              # -> bsub_pipeline_both.sh (then run it)
+python -m spotlight run both --dry-run              # list the stages and units first
 python -m spotlight run basic --stop-after qstack   # stop and look at the qstack
 python -m spotlight run basic --start-at basic      # resume after inspecting it
+python -m spotlight run intensity 200-395           # narrow the correct stage to these tiles
 ```
+
+Two pipelines take the tiles to act on, as ids or inclusive ranges:
+
+```bash
+python -m spotlight run spotfix 126 158   # repair local dimming in a corrected tile (local only)
+python -m spotlight run copy 200-395      # rewrite tiles into the corrected layout, uncorrected
+```
+
+Individual stages, for a hand-driven run or a custom bsub script. `emptiness` must precede
+`int-aggregate` — the tile classification needs its `empty_area`:
+
+```bash
+python -m spotlight emptiness                 # background level, threshold, empty fractions
+python -m spotlight stats <camera> [start] [stop]
+python -m spotlight qstack                    # -> qstacks/camera{N}.tiff  (inspect these)
+python -m spotlight basic [cameras...]        # -> results_root/camera{N}/{Flat,Dark}-field.tif
+python -m spotlight int-stats <setup>
+python -m spotlight int-aggregate             # -> tile_gains.json, intensity_target.json
+python -m spotlight correct <setup> [--mode auto|basic|intensity|both|copy|copy-basic]
+python -m spotlight submit stats|correct|intensity   # the older per-stage bsub scripts
+```
+
+The same entry points exist in Python (`sp.create_quartile_histograms()`, `sp.save_qstack()`,
+`sp.run_basic()`, `sp.create_intensity_correction_script()`, …) if you would rather drive it
+from a notebook.
 
 ## Modes
 
