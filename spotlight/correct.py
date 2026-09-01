@@ -22,7 +22,9 @@ same layout a corrected tile gets -- chunking, sharding, pyramid, group metadata
 the kernel skipped entirely. They exist for the channels of a dataset that need no
 correction: those tiles still have to live in the output store, or the dataset.xml the
 corrected tiles are indexed by cannot resolve them. The two differ only in which
-configured I/O pair they use, and both force `apply_basic` off.
+configured I/O pair they use, and both force `apply_basic` off. A copy is also where
+`crop_margin` is honoured -- trimming a tile's decon-artifact border is a rewrite with no
+arithmetic, and it has to precede the stats that measure the overlaps it trims.
 
 `auto` picks `both` when the BaSiC fields and the intensity target are both present,
 otherwise whichever one is. `auto` never picks a copy -- copying is always asked for.
@@ -170,6 +172,41 @@ def _view(cfg, mode):
     return view
 
 
+def _cropped(src_c, view, mode, setup):
+    """`src_c` with `crop_margin` voxels trimmed off all six faces, rebased to origin 0.
+
+    Deconvolution leaves artifacts in a tile's border voxels, and a tile's border is
+    exactly where the gain solve measures its overlaps -- so a crop meant to keep them out
+    of a correction has to happen BEFORE `int-stats`, in a pass of its own. That pass is
+    `copy`, which already reads a tile and rewrites it into the output layout with no
+    arithmetic. Trimming the source view is the whole feature: the shard grid, the pyramid
+    and the group metadata are all derived from this shape.
+
+    Copy modes only, and that is not tidiness. `_correct_shard` slices the flat/dark field
+    with the OUTPUT's (y, x), so a cropped output would divide by a field offset from it by
+    the margin -- silently, and by a plausible amount.
+    """
+    m = int(view.get("crop_margin") or 0)
+    if not m:
+        return src_c
+    if mode not in COPY_MODES:
+        raise RuntimeError(
+            f"crop_margin={m} is set, but mode={mode} corrects as well as copies, and the "
+            f"flat/dark field is indexed by the output's (y, x) -- a cropped output would "
+            f"divide by a field offset from it by {m} voxel(s). Crop in its own pass "
+            f"(`run copy <tiles>`) and point the correction's input at that output, so its "
+            f"stats are measured on the cropped voxels too.")
+    Z, Y, X = src_c.domain.shape
+    if min(Z, Y, X) <= 2 * m:
+        raise RuntimeError(f"crop_margin={m} leaves nothing of setup {setup}'s "
+                           f"{(Z, Y, X)} tile")
+    print(f"correct: setup {setup} cropping {m} voxel(s) off all six faces, "
+          f"{(Z, Y, X)} -> {(Z - 2 * m, Y - 2 * m, X - 2 * m)}. The output store's "
+          f"dataset.xml must be regenerated to match "
+          f"(python -m spotlight.crop_xml in.xml out.xml {m}).")
+    return src_c[m:Z - m, m:Y - m, m:X - m][ts.d[:].translate_to[0]]
+
+
 def _intensity_params(cfg, setup):
     """`(mode, thr, mean, scale, target_mean)` for the per-tile rescale.
 
@@ -295,7 +332,7 @@ async def _run(cfg, setup, requested):
                   context=ctx, create=False, open=True).result()
     # Canonical (Z, Y, X) at both ends, so the shard loop never transposes in numpy and
     # the kernel always sees C-contiguous data.
-    src_c = canonical_view(src, in_order)
+    src_c = _cropped(canonical_view(src, in_order), view, mode, setup)
     zyx = tuple(src_c.domain.shape)
     dtype_name = str(src.dtype.name)
 

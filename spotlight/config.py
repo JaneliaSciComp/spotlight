@@ -126,6 +126,20 @@ DEFAULTS = {
     # = NaN, which casts to an ARBITRARY uint16. Flooring makes it saturate instead.
     "flat_floor": 1e-3,
 
+    # ─── crop (copy modes only) ───────────────────────────────────────────────
+    # Voxels trimmed from all six faces of every tile a `copy`/`copy-basic` run rewrites,
+    # for the deconvolution artifacts that live in a tile's border voxels. 0 disables it.
+    #
+    # Copy modes only: `correct._cropped` refuses it for a mode that also corrects, because
+    # the flat/dark field is indexed by the OUTPUT's (y, x) and a cropped output would
+    # divide by a field offset from it by the margin. It is also the right order -- a crop
+    # meant to keep decon artifacts out of the gain solve has to happen before `int-stats`,
+    # since a tile's border is exactly where the overlaps are measured.
+    #
+    # The output store's dataset.xml has to be regenerated to match, or every tile is
+    # 2*margin too large and mispositioned by `margin`: `python -m spotlight.crop_xml`.
+    "crop_margin": 0,
+
     # ─── OME-TIFF output (output_format = "tiff") ─────────────────────────────
     "tiff_compression": "zstd",         # or "deflate", "lzw", None for uncompressed
     "tiff_slab_planes": 64,             # z planes held in memory at once while streaming

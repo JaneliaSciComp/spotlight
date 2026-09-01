@@ -616,8 +616,12 @@ def write_pipeline_script(cfg=None, pipeline="both", start_at=None, stop_after=N
     path = f"bsub_pipeline_{pipeline}.sh"
     _write(path, "\n".join(out) + "\n")
     if mode in COPY_MODES:
+        margin = int(cfg.get("crop_margin") or 0)
         print(f"correct --mode {mode}: no arithmetic, "
-              f"{'BaSiC' if mode == 'copy-basic' else 'intensity'} I/O pair")
+              f"{'BaSiC' if mode == 'copy-basic' else 'intensity'} I/O pair"
+              + (f", crop_margin={margin} (every tile loses {2 * margin} voxels per axis; "
+                 f"regenerate the output store's dataset.xml with "
+                 f"`python -m spotlight.crop_xml`)" if margin else ""))
     else:
         print(f"apply_basic={apply_basic} for int-stats/int-aggregate; "
               f"correct --mode {mode}")

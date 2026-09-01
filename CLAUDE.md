@@ -265,6 +265,44 @@ The `copy` pipeline is `["correct"]` alone. No emptiness: a copy measures nothin
 fresh dataset `ensure_emptiness` would rescan every tile to produce numbers this run never
 reads.
 
+### `crop_margin`: the decon-artifact border, trimmed in the copy pass
+
+Deconvolution leaves artifacts in a tile's border voxels, and a tile's border is exactly
+where the gain solve measures its overlaps. So the trim has to happen BEFORE `int-stats`,
+which means a pass of its own -- and `copy` already IS that pass: read a tile, rewrite it
+into the output layout, no arithmetic. `crop_margin = 20` in the toml makes
+`correct._cropped` trim the SOURCE VIEW (`src_c[m:Z-m, ...][ts.d[:].translate_to[0]]`) and
+everything downstream -- the shard grid, the pyramid, the group metadata -- follows from
+that shape. There is no crop mode, no crop stage, no new CLI flag.
+
+    python -m spotlight run copy 0-195 --cluster        # crop_margin = 20 in the toml
+    python -m spotlight.crop_xml in/dataset.xml crop/dataset.xml 20
+
+**Copy modes only, and `_cropped` raises for the others.** Not tidiness: `_correct_shard`
+slices the flat/dark field with the OUTPUT's (y, x), so a cropped correction would divide
+by a field offset from it by the margin -- silently, and by a plausible amount. Folding the
+crop into `both` would also measure the stats on uncropped voxels, i.e. on the artifacts.
+
+The xml is the other half, and a wrong one mispositions every tile rather than breaking:
+
+- **`<ViewSetup><size>` shrinks by `2*margin`; the crop offset is appended LAST** to each
+  `<ViewRegistration>`. SpimData composes `M_0 @ M_1 @ ... @ M_last`, so last applies
+  FIRST to a raw voxel coordinate, which is what a crop is: `world = M_old @ (v + m)`. Last
+  also puts it ahead of `calibration`, so the offset stays in voxels when z is anisotropic.
+  Prepending instead is the mutation that gets caught by the world-position test.
+- **Patched line by line, not re-serialised.** ElementTree would rewrite all 17705 lines of
+  the mouse xml, so the diff would hide the crop. The count check (one `<size>` per
+  `<ViewSetup>`, one offset per `<ViewRegistration>`) is what makes line matching safe, and
+  the in-`<voxelSize>` guard is the second one: a voxel size of `1 1 4` is all integers.
+- `StitchingResults` shifts are relative and left untouched.
+
+Verified against the real 196-setup xml: cropped voxel (0,0,0) lands within 0.0 of the
+original's (20,20,20) for every setup, and tile 0/1's x overlap goes 486.8 -> 446.8 voxels.
+
+Untested: the crop against real data. `tests/test_crop.py` runs it on a 64x48x63 synthetic
+store, and one 2048x2048x1132 tile is the cheap check before the 197-element array
+(`run copy 0`, one tile, ~9.5 GB).
+
 ## A hung element is usually a hung HOST, not a hung code path
 
 `mouse_hipp_3_channel`, job `153471857` (`int-apply`, `[3-6,65-560]`, 30 slots each).
