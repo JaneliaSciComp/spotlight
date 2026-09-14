@@ -7,7 +7,6 @@ non-standard zarr3 axis orders, and it resolves the on-disk layout from OME-NGFF
 rather than assuming a directory convention.
 """
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -17,8 +16,8 @@ import tensorstore as ts
 
 from . import config as _config
 from .formats import (
-    _AXES, _AXES_ZYX, _in_order, _input_location, _ngff_datasets, _output_path, _SPEC,
-    canonical_shape, canonical_view,
+    _AXES, _AXES_ZYX, _exists, _in_order, _input_location, _kvstore_spec, _ngff_datasets,
+    _output_path, _read_json, _SPEC, _write_json, canonical_shape, canonical_view,
 )
 
 __all__ = [
@@ -109,8 +108,7 @@ def open_source(cfg, setup, scale=0, ctx=None):
     """A canonical (Z, Y, X) view of one setup's input array at `scale`."""
     bcfg = _config.basic_view(cfg)
     path, order = _input_location(bcfg, setup, scale)
-    spec = {"driver": _SPEC[bcfg["input_format"]]["driver"],
-            "kvstore": {"driver": "file", "path": path}}
+    spec = {"driver": _SPEC[bcfg["input_format"]]["driver"], "kvstore": _kvstore_spec(path)}
     return canonical_view(_open(spec, ctx), order)
 
 
@@ -125,8 +123,7 @@ def source_size_xyz(cfg, setup=None, scale=0):
         setup = _config.camera_setups(cfg)[0][0]
     path, order = _input_location(bcfg, setup, scale)
     meta_name = _SPEC[bcfg["input_format"]]["meta"]
-    with open(f"{path}/{meta_name}") as f:
-        meta = json.load(f)
+    meta = _read_json(f"{path}/{meta_name}")
     shape = meta["dimensions"] if "dimensions" in meta else meta["shape"]
     z, y, x = canonical_shape(shape, order)
     return [x, y, z]
@@ -224,9 +221,8 @@ def open_target(cfg, setup, size_xyz, ctx=None):
     shard = _in_order(cfg["shard_size"][::-1], order)
     driver, meta = _output_metadata(fmt, list(shape), chunk, shard, "uint16")
     spec = {"driver": driver,
-            "kvstore": {"driver": "file",
-                        "path": _output_path(fmt, bcfg["output_intensity_path"],
-                                                       setup, 0)},
+            "kvstore": _kvstore_spec(_output_path(fmt, bcfg["output_intensity_path"],
+                                                   setup, 0)),
             "metadata": meta}
     arr = _open(spec, ctx, create=True, open=True)
     return canonical_view(arr, order)
@@ -337,15 +333,11 @@ def _context():
 
 
 def _atomic_write_json(path, obj):
-    """Write JSON atomically (temp + os.replace), so concurrent array jobs cannot corrupt
-    the shared top-level group file.
+    """Write JSON atomically, so concurrent array jobs cannot corrupt the shared top-level
+    group file. Thin wrapper over `formats._write_json` -- kept under its old name since
+    `aggregate.py`, `emptiness.py` and `spotfix.py` all import it by it.
     """
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_name(p.name + f".tmp{os.getpid()}")
-    with open(tmp, "w") as f:
-        json.dump(obj, f, indent=2)
-    os.replace(tmp, p)
+    _write_json(path, obj)
 
 
 def write_group_metadata(cfg, setup, factors):
@@ -472,14 +464,14 @@ def ensure_group_json(cfg, setup):
     if fmt in ("zarr3", "zarr3_unsharded", "zarr3_zyx"):
         node = {"zarr_format": 3, "node_type": "group"}
         for path in (f"{root}/zarr.json", f"{root}/s{setup}-t0.zarr/zarr.json"):
-            if not Path(path).exists():
+            if not _exists(path):
                 _atomic_write_json(path, node)
     elif fmt == "zarr2":
         for path in (f"{root}/.zgroup", f"{root}/s{setup}-t0.zarr/.zgroup"):
-            if not Path(path).exists():
+            if not _exists(path):
                 _atomic_write_json(path, {"zarr_format": 2})
     elif fmt == "n5":
-        if not Path(f"{root}/attributes.json").exists():
+        if not _exists(f"{root}/attributes.json"):
             _atomic_write_json(f"{root}/attributes.json", {"n5": "2.0.0"})
 
 
@@ -493,7 +485,7 @@ def open_output_array(cfg, setup, level, shape, dtype_name, context):
     driver, meta = _output_metadata(fmt, list(shape), chunk, shard, dtype_name)
     arr = ts.open({
         "driver": driver,
-        "kvstore": {"driver": "file", "path": path},
+        "kvstore": _kvstore_spec(path),
         "metadata": meta,
     }, context=context, create=True, open=True).result()
     ensure_group_json(cfg, setup)
@@ -521,11 +513,11 @@ def source_pyramid_shapes(cfg, setup):
     level = 0
     while True:
         path, order = _input_location(cfg, setup, level)
-        if not (Path(path) / spec["meta"]).exists():
+        if not _exists(f"{path}/{spec['meta']}"):
             break
         arr = ts.open({
             "driver": spec["driver"],
-            "kvstore": {"driver": "file", "path": path},
+            "kvstore": _kvstore_spec(path),
         }, context=context, open=True, read=True).result()
         shapes.append(canonical_shape(arr.domain.shape, order))   # (Z, Y, X)
         level += 1

@@ -53,7 +53,9 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 import tensorstore as ts
 
-from .formats import _SPEC, _in_order, _input_location, canonical_shape, canonical_view
+from .formats import (
+    _kvstore_spec, _SPEC, _in_order, _input_location, canonical_shape, canonical_view,
+)
 from .kernel import ShardCorrection, _BLOCK_VOXELS, _blocks, _correct_shard
 from .config import basic_field_paths, camera_of, target_path
 from .stores import open_output_array, source_pyramid_factors, write_group_metadata
@@ -328,7 +330,7 @@ async def _run(cfg, setup, requested):
     in_path, in_order = _input_location(view, setup, 0)
 
     src = ts.open({"driver": _SPEC[view["input_format"]]["driver"],
-                   "kvstore": {"driver": "file", "path": in_path}},
+                   "kvstore": _kvstore_spec(in_path)},
                   context=ctx, create=False, open=True).result()
     # Canonical (Z, Y, X) at both ends, so the shard loop never transposes in numpy and
     # the kernel always sees C-contiguous data.
@@ -449,7 +451,7 @@ async def _run(cfg, setup, requested):
     # the same cumulative factors the input dataset uses.
     factors = source_pyramid_factors(view, setup)
     level0 = ts.open({"driver": _SPEC[view["output_format"]]["driver"],
-                      "kvstore": {"driver": "file", "path": out_path}},
+                      "kvstore": _kvstore_spec(out_path)},
                      context=ctx, open=True, read=True).result()
     for level in range(1, len(factors)):
         ds = ts.open({"driver": "downsample",

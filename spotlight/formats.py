@@ -23,6 +23,7 @@ import json
 from datetime import datetime as dt
 
 import numpy as np
+import tensorstore as ts
 
 
 FORMATS = ("n5", "zarr2", "zarr3_unsharded", "zarr3", "zarr3_zyx", "zarr3_raw")
@@ -105,6 +106,44 @@ _SPEC = {
 }
 
 
+def _kvstore_spec(path):
+    """kvstore spec for one array-store path.
+
+    A URL (`s3://...`, `gs://...`, `http(s)://...`, ...) is passed straight through as a
+    string -- tensorstore parses its own scheme -- so `input_intensity_path` /
+    `output_intensity_path` / `input_basic_path` / `output_basic_path` can each be a bucket
+    instead of a local directory. A plain path keeps the explicit `file` driver, as before.
+    """
+    return path if "://" in path else {"driver": "file", "path": path}
+
+
+def _read_json(path):
+    """Read one JSON metadata file for an exact key path, through tensorstore's kvstore --
+    works the same for a local path and a URL store root, unlike `open()`."""
+    result = ts.KvStore.open(_kvstore_spec(path)).result().read("").result()
+    if result.state == "missing":
+        raise FileNotFoundError(path)
+    return json.loads(result.value)
+
+
+def _exists(path):
+    """Whether a key exists at `path`, through tensorstore's kvstore."""
+    return ts.KvStore.open(_kvstore_spec(path)).result().read("").result().state != "missing"
+
+
+def _write_json(path, obj):
+    """Write one JSON metadata file to an exact key path, through tensorstore's kvstore.
+
+    A single kvstore write is atomic on every backend tensorstore supports -- the `file`
+    driver does its own temp+rename internally, matching what this package used to do by
+    hand, and every other driver's write is a single atomic PUT -- so this is what makes
+    the output group metadata (`write_group_metadata`, `ensure_group_json`) work for a URL
+    store root with no extra branching.
+    """
+    ts.KvStore.open(_kvstore_spec(str(path))).result().write(
+        "", json.dumps(obj, indent=2).encode()).result()
+
+
 def _path(fmt, root, setup, scale):
     return _SPEC[fmt]["path"].format(base=root, setup=setup, scale=scale)
 
@@ -137,8 +176,7 @@ def _resolve_zarr3(root, setup, scale):
     """
     group_dir = f"{root}/s{setup}-t0.zarr"
     try:
-        with open(f"{group_dir}/zarr.json") as f:
-            group = json.load(f)
+        group = _read_json(f"{group_dir}/zarr.json")
         multiscale = group["attributes"]["ome"]["multiscales"][0]
         datasets = multiscale["datasets"]
     except (FileNotFoundError, KeyError, IndexError):
@@ -146,8 +184,7 @@ def _resolve_zarr3(root, setup, scale):
     if scale >= len(datasets):
         return None
     path = f'{group_dir}/{datasets[scale]["path"]}'
-    with open(f"{path}/zarr.json") as f:
-        arr_meta = json.load(f)
+    arr_meta = _read_json(f"{path}/zarr.json")
     names = arr_meta.get("dimension_names")
     if names is None and len(arr_meta["shape"]) == 3:
         # This codebase's own writers (`_write_ngff_metadata`) don't stamp

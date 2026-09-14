@@ -265,6 +265,24 @@ def test_the_two_pools_are_sized_from_the_reservation_and_differ(monkeypatch):
             spec["data_copy_concurrency"]["limit"]) == (48, 7)
 
 
+# ─── URL-style store roots ─────────────────────────────────────────────────────
+
+
+def test_kvstore_spec_passes_a_url_through_and_wraps_a_plain_path(tmp_path):
+    """A `scheme://` root is handed to tensorstore verbatim, so `s3://`/`gs://`/`http(s)://`
+    work via tensorstore's own parsing; a plain path keeps the explicit `file` driver."""
+    from spotlight.formats import _exists, _kvstore_spec, _read_json, _write_json
+
+    assert _kvstore_spec("/plain/path") == {"driver": "file", "path": "/plain/path"}
+    assert _kvstore_spec("s3://bucket/key") == "s3://bucket/key"
+
+    url = f"file://{tmp_path}/zarr.json"
+    assert not _exists(url)
+    _write_json(url, {"zarr_format": 3})
+    assert _exists(url)
+    assert _read_json(url) == {"zarr_format": 3}
+
+
 def test_one_definition_of_the_slot_count(monkeypatch):
     """The pools only add up if they all size from one number, so nothing may read
     LSB_DJOB_NUMPROC on its own."""

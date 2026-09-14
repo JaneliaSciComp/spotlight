@@ -36,7 +36,9 @@ import tensorstore as ts
 
 from . import config as _config
 from . import stores
-from .formats import _in_order, _output_path, _SPEC, canonical_shape, canonical_view
+from .formats import (
+    _exists, _in_order, _kvstore_spec, _output_path, _SPEC, canonical_shape, canonical_view,
+)
 from .progress import Progress
 
 __all__ = ["fix_tile", "neighbours", "gain_field", "DEFAULTS"]
@@ -209,8 +211,8 @@ def _read_level(cfg, setup, level, ctx):
     """
     fmt = cfg["output_format"]
     spec = {"driver": _SPEC[fmt]["driver"],
-            "kvstore": {"driver": "file",
-                        "path": _output_path(fmt, cfg["output_intensity_path"], setup, level)}}
+            "kvstore": _kvstore_spec(
+                _output_path(fmt, cfg["output_intensity_path"], setup, level))}
     arr = canonical_view(stores._open(spec, ctx, open=True, read=True), _SPEC[fmt]["order"])
     return np.asarray(arr[...].read().result(), dtype=np.float32)
 
@@ -582,10 +584,10 @@ def _levels_in(path, fmt):
     shapes, level = [], 0
     while True:
         p = (f"{path}/timepoint0/s{level}" if fmt == "n5" else f"{path}/{level}")
-        if not os.path.exists(f"{p}/{spec['meta']}"):
+        if not _exists(f"{p}/{spec['meta']}"):
             break
         arr = ts.open({"driver": spec["driver"],
-                       "kvstore": {"driver": "file", "path": p}},
+                       "kvstore": _kvstore_spec(p)},
                       open=True, read=True).result()
         shapes.append(canonical_shape(arr.domain.shape, spec["order"]))
         level += 1
@@ -670,7 +672,7 @@ async def _write(cfg, setup, g, loc, backup, report):
 
     src_path = (f"{backup}/timepoint0/s0" if fmt == "n5" else f"{backup}/0")
     src = canonical_view(stores._open(
-        {"driver": spec["driver"], "kvstore": {"driver": "file", "path": src_path}},
+        {"driver": spec["driver"], "kvstore": _kvstore_spec(src_path)},
         ctx, open=True, read=True), order)
     dtype_name = src.dtype.name
     hi = np.iinfo(np.dtype(dtype_name)).max
@@ -722,7 +724,7 @@ async def _write(cfg, setup, g, loc, backup, report):
     # The pyramid, mean-downsampled from the FIXED level 0 with the factors the tile
     # already had, so the levels stay consistent with what the dataset advertises.
     level0 = ts.open({"driver": spec["driver"],
-                      "kvstore": {"driver": "file", "path": out_path}},
+                      "kvstore": _kvstore_spec(out_path)},
                      context=ctx, open=True, read=True).result()
     for level in range(1, len(factors)):
         ds = ts.open({"driver": "downsample", "base": level0.spec(),
