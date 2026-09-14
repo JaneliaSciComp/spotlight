@@ -26,7 +26,7 @@ import numpy as np
 import tensorstore as ts
 
 from .config import camera_groups, empty_fraction_path, stats_path, tile_list
-from .formats import (_input_location, _SPEC, canonical_shape, canonical_view,
+from .formats import (_input_location, _kvstore_spec, _SPEC, canonical_shape, canonical_view,
                       write_plane_tiff)
 from .stores import _atomic_write_json, _context, slots, source_pyramid_shapes
 from .tilestats import (MIN_FG_FRACTION, _merge_tile_stats, threshold_mode,
@@ -106,7 +106,7 @@ def _read_tile(cfg, setup, level):
     path, order = _input_location(cfg, setup, level)
     arr = ts.open({
         "driver": _SPEC[cfg["input_format"]]["driver"],
-        "kvstore": {"driver": "file", "path": path},
+        "kvstore": _kvstore_spec(path),
     }, context=_context(), open=True, read=True).result()
     return np.asarray(canonical_view(arr, order).read(order="C").result())
 

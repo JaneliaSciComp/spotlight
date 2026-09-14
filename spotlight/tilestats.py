@@ -21,7 +21,6 @@ CLI: `python -m spotlight int-stats <setup>`.
 
 import json
 from datetime import datetime as dt
-from pathlib import Path
 
 import numpy as np
 import tensorstore as ts
@@ -29,7 +28,7 @@ from skimage.filters import threshold_li, threshold_otsu
 
 from .config import camera_of, stats_path
 from .fields import basic_model
-from .formats import _input_location, _SPEC, canonical_view
+from .formats import _exists, _input_location, _kvstore_spec, _SPEC, canonical_view
 from .stores import _context, source_pyramid_factors
 
 
@@ -99,11 +98,11 @@ def open_downsampled(cfg, setup):
     def _open(path):
         return ts.open({
             "driver": spec["driver"],
-            "kvstore": {"driver": "file", "path": path},
+            "kvstore": _kvstore_spec(path),
         }, context=context, open=True, read=True).result()
 
     path, order = _input_location(cfg, setup, scale)
-    if (Path(path) / spec["meta"]).exists():
+    if _exists(f"{path}/{spec['meta']}"):
         return _open(path)
 
     path0, order0 = _input_location(cfg, setup, 0)
