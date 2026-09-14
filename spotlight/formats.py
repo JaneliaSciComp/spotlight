@@ -117,13 +117,18 @@ def _kvstore_spec(path):
     return path if "://" in path else {"driver": "file", "path": path}
 
 
-def _read_json(path):
-    """Read one JSON metadata file for an exact key path, through tensorstore's kvstore --
-    works the same for a local path and a URL store root, unlike `open()`."""
+def _read_bytes(path):
+    """Read the bytes at an exact key path, through tensorstore's kvstore -- works the
+    same for a local path and a URL (`dataset_xml` included), unlike `open()`."""
     result = ts.KvStore.open(_kvstore_spec(path)).result().read("").result()
     if result.state == "missing":
         raise FileNotFoundError(path)
-    return json.loads(result.value)
+    return result.value
+
+
+def _read_json(path):
+    """Read one JSON metadata file for an exact key path; see `_read_bytes`."""
+    return json.loads(_read_bytes(path))
 
 
 def _exists(path):

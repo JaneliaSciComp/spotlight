@@ -44,6 +44,8 @@ from pathlib import Path
 import numpy as np
 import tifffile
 
+from .formats import _exists, _read_bytes
+
 __all__ = ["voxel_size_um", "write_tile_ome_tiff", "tiff_tile_path"]
 
 # zstd via imagecodecs: ~2-4x on sparse 16-bit microscopy and fast to decode. Named here
@@ -72,9 +74,9 @@ def voxel_size_um(cfg, setup):
     carrying no calibration at all, because the first is believed.
     """
     path = cfg.get("dataset_xml")
-    if not path or not Path(path).is_file():
+    if not path or not _exists(path):
         return None
-    root = ET.parse(path).getroot()
+    root = ET.fromstring(_read_bytes(path))
     for vs in root.findall(".//ViewSetups/ViewSetup"):
         if int(vs.findtext("id")) != int(setup):
             continue

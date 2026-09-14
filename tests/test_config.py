@@ -196,3 +196,29 @@ def test_slashes_is_a_noop_off_windows(monkeypatch):
     corrupt a real path rather than fix one."""
     monkeypatch.setattr(config.os, "sep", "/")
     assert config._slashes(r"/data/weird\name.n5") == r"/data/weird\name.n5"
+
+
+# ─── dataset_xml as a URL store root ───────────────────────────────────────────
+
+
+def test_dataset_xml_default_is_scheme_agnostic_for_a_url_store(tmp_path, monkeypatch):
+    """`Path(store).parent` would collapse a URL's `//` to `/`; the default has to be
+    built with a plain rsplit instead, matching how every other path here is built."""
+    monkeypatch.chdir(tmp_path)
+    config.set_config(input_intensity_path="s3://bucket/exp/dataset.ome.zarr",
+                      results_root=str(tmp_path / "res"), last_setup=0, input_format="zarr2")
+    cfg = config.load_config()
+    assert cfg["dataset_xml"] == "s3://bucket/exp/dataset.xml"
+
+
+def test_check_setups_in_xml_reads_a_url(tmp_path):
+    """`dataset_xml` is read through the same kvstore path as the store roots, so a
+    `file://` (or `s3://`/`gs://`) URL works exactly like a plain path."""
+    xml = tmp_path / "dataset.xml"
+    xml.write_text('<SpimData><SequenceDescription><ViewSetups>'
+                   '<ViewSetup><id>0</id></ViewSetup>'
+                   '</ViewSetups></SequenceDescription><MissingViews/></SpimData>')
+    cfg = {"dataset_xml": f"file://{xml}"}
+    assert config.check_setups_in_xml(cfg, [0]) == [0]
+    with pytest.raises(SystemExit, match="are not ViewSetups"):
+        config.check_setups_in_xml(cfg, [1])

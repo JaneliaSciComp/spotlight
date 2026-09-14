@@ -48,7 +48,7 @@ from scipy.sparse.linalg import lsqr
 from .config import (camera_groups, camera_of, stage_cores, stats_path,
                      target_path, tile_list)
 from .fields import _check_basic_mode, basic_model
-from .formats import _SPEC, _input_location, canonical_view
+from .formats import _read_bytes, _SPEC, _input_location, canonical_view
 from .stores import _atomic_write_json, slots, source_pyramid_factors
 from .tilestats import (
     MIN_FG_FRACTION, MIN_FOREGROUND, THRESHOLD_METHODS, _classify, limits,
@@ -77,7 +77,7 @@ from .tilestats import (
 
 
 def _parse_dataset_xml(cfg):
-    return ET.parse(cfg["dataset_xml"]).getroot()
+    return ET.fromstring(_read_bytes(cfg["dataset_xml"]))
 
 
 def _view_setup_sizes(xml_root):

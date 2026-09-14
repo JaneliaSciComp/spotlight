@@ -37,7 +37,8 @@ import tensorstore as ts
 from . import config as _config
 from . import stores
 from .formats import (
-    _exists, _in_order, _kvstore_spec, _output_path, _SPEC, canonical_shape, canonical_view,
+    _exists, _in_order, _kvstore_spec, _output_path, _read_bytes, _SPEC, canonical_shape,
+    canonical_view,
 )
 from .progress import Progress
 
@@ -86,7 +87,7 @@ def edge_r(cfg):
 
 
 def _xml(cfg):
-    return ET.parse(cfg["dataset_xml"]).getroot()
+    return ET.fromstring(_read_bytes(cfg["dataset_xml"]))
 
 
 # Which ViewSetup attributes must match for a tile to be a usable reference. A different

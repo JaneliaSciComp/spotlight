@@ -19,7 +19,7 @@ from pathlib import Path
 import tomli_w
 import tomllib
 
-from .formats import FORMATS, OUTPUT_FORMATS
+from .formats import _exists, _read_bytes, FORMATS, OUTPUT_FORMATS
 
 __all__ = [
     "load_config", "set_config", "set_basic_config", "basic_params",
@@ -396,7 +396,10 @@ def _load_toml_config(require_intensity_io=True):
     # up). Falls back to input_basic_path so a BaSiC-only toml still resolves it.
     store = cfg["input_intensity_path"] or expand(cfg.get("input_basic_path", ""))
     if store:
-        cfg.setdefault("dataset_xml", str(Path(store).parent / "dataset.xml"))
+        # Not `Path(store).parent`: a URL store root (`s3://bucket/exp/dataset.ome.zarr`)
+        # would have its `//` collapsed to `/` by Path. A plain rsplit is scheme-agnostic
+        # and matches how every other path in this package is built (formats._path).
+        cfg.setdefault("dataset_xml", f"{store.rsplit('/', 1)[0]}/dataset.xml")
 
     # Joint BaSiC flat/dark-field correction (see the module docstring). Default
     # on when run_basic()'s fields exist for the first camera -- if they're there,
@@ -468,10 +471,10 @@ def check_setups_in_xml(cfg, setups):
     import xml.etree.ElementTree as ET
 
     path = cfg.get("dataset_xml")
-    if not path or not Path(path).is_file():
+    if not path or not _exists(path):
         raise SystemExit(f"cannot check the requested setups: dataset_xml "
                          f"({path or 'unset'}) is not readable")
-    root = ET.parse(path).getroot()
+    root = ET.fromstring(_read_bytes(path))
     known = {int(vs.findtext("id")) for vs in root.findall(".//ViewSetups/ViewSetup")}
     missing = {int(mv.get("setup")) for mv in root.findall(".//MissingViews/MissingView")}
     unknown = sorted(set(setups) - known)
