@@ -107,6 +107,13 @@ def test_camera_setups(tmp_path, monkeypatch):
     assert config.camera_setups(cfg) == [[171, 172], [201, 202, 203]]
     assert config.num_cameras(cfg) == 2
 
+    config.set_config(setup_ids=[["124-129", "139-144"], ["184-189"]])
+    cfg = config.load_config()
+    assert config.camera_setups(cfg) == [
+        [124, 125, 126, 127, 128, 129, 139, 140, 141, 142, 143, 144],
+        [184, 185, 186, 187, 188, 189],
+    ]
+
 
 def test_basic_view_rebinds_the_io_paths(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

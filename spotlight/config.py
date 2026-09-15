@@ -423,6 +423,12 @@ def _load_toml_config(require_intensity_io=True):
     elif "apply_basic" not in cfg:
         cfg["apply_basic"] = all(p.exists() for p in basic_field_paths(cfg, 0))
     cfg["apply_basic"] = bool(cfg["apply_basic"])
+
+    # Each group may hold ranges (`"124-129"`) alongside plain ints, same grammar as the
+    # CLI's `parse_setups` -- expand per group here so tile_list/camera_groups never see
+    # anything but flat int lists, and groups stay in their own camera rather than merging.
+    if "setup_ids" in cfg:
+        cfg["setup_ids"] = [parse_setups(group) for group in cfg["setup_ids"]]
     return cfg
 
 
@@ -491,8 +497,9 @@ def check_setups_in_xml(cfg, setups):
 
 def camera_groups(cfg):
     """Setups grouped by camera: `setup_ids` as-is if given (one group per camera, e.g.
-    `[[171,...,194], [201,...,204]]`), else contiguous `setups_per_camera`-sized chunks of
-    `0..last_setup`.
+    `[[171,...,194], [201,...,204]]`, or ranges like `[["171-194"], ["201-204"]]` --
+    expanded by `_load_toml_config` with the same grammar as `parse_setups`), else
+    contiguous `setups_per_camera`-sized chunks of `0..last_setup`.
 
     Mirrors `camera_setups()` in src/BigFlatFieldIlluminator.jl, so the two pipelines
     agree on which setups belong to which camera.

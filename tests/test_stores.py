@@ -283,6 +283,20 @@ def test_kvstore_spec_passes_a_url_through_and_wraps_a_plain_path(tmp_path):
     assert _read_json(url) == {"zarr_format": 3}
 
 
+def test_every_input_output_kvstore_goes_through__kvstore_spec():
+    """A literal `{"driver": "file", ...}` bypasses `_kvstore_spec`, so it silently breaks
+    a URL store root -- exactly what happened when `emptiness.py` and `tilestats.py` were
+    missed on the first pass over `input_intensity_path`/`output_intensity_path`. The two
+    remaining literals are the `results_root` stats-array paths (`stores.open_stats_array`,
+    `qstack.read_quantile_stack`), which are local-only by choice, not by oversight."""
+    from pathlib import Path
+    pkg = Path(stores.__file__).parent
+    allowed = {"formats.py", "stores.py", "qstack.py"}
+    offenders = [p.name for p in pkg.glob("*.py")
+                if p.name not in allowed and '"driver": "file"' in p.read_text()]
+    assert not offenders, f"{offenders} build a kvstore spec without formats._kvstore_spec"
+
+
 def test_one_definition_of_the_slot_count(monkeypatch):
     """The pools only add up if they all size from one number, so nothing may read
     LSB_DJOB_NUMPROC on its own."""
