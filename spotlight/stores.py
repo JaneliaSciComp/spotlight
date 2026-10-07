@@ -340,6 +340,23 @@ def _atomic_write_json(path, obj):
     _write_json(path, obj)
 
 
+def _ensure_root(path, obj):
+    """Create the store's ROOT group file if absent, and never rewrite it.
+
+    Every array element shares it. Rewriting it per element -- as `write_group_metadata`
+    did -- killed 4 of 600 on /nrs: tensorstore's temp name is fixed (`zarr.json.__lock`),
+    so concurrent writers rename each other's temp away (NOT_FOUND), and readers on other
+    NFS clients hit ESTALE on the replaced inode. A failure here is fine if a racing
+    element created it meanwhile: the contents are constant.
+    """
+    try:
+        if not _exists(path):
+            _atomic_write_json(path, obj)
+    except ValueError:
+        if not _exists(path):
+            raise
+
+
 def write_group_metadata(cfg, setup, factors):
     """Write multiscale group metadata for the output dataset/setup.
 
@@ -369,7 +386,7 @@ def write_group_metadata(cfg, setup, factors):
                 "coordinateTransformations": [{"type": "scale", "scale": [1.0] * len(axes)}],
             }],
         }
-        _atomic_write_json(f"{ds_dir}/zarr.json", {"zarr_format": 3, "node_type": "group"})
+        _ensure_root(f"{ds_dir}/zarr.json", {"zarr_format": 3, "node_type": "group"})
         _atomic_write_json(f"{setup_dir}/zarr.json",
                            {"zarr_format": 3, "node_type": "group", "attributes": {"ome": ome}})
     elif fmt == "zarr2":
@@ -382,14 +399,14 @@ def write_group_metadata(cfg, setup, factors):
             "datasets": datasets,
             "coordinateTransformations": [{"type": "scale", "scale": [1.0] * len(axes)}],
         }]
-        _atomic_write_json(f"{ds_dir}/.zgroup", {"zarr_format": 2})
+        _ensure_root(f"{ds_dir}/.zgroup", {"zarr_format": 2})
         _atomic_write_json(f"{setup_dir}/.zgroup", {"zarr_format": 2})
         _atomic_write_json(f"{setup_dir}/.zattrs", {"multiscales": multiscales})
     else:  # n5: group-level downsamplingFactors (x, y, z), the n5 multiscale convention
         ds_dir = cfg["output_intensity_path"]
         grp = f"{ds_dir}/setup{setup}/timepoint0"
         xyz = [[float(fx), float(fy), float(fz)] for (fz, fy, fx) in factors]
-        _atomic_write_json(f"{ds_dir}/attributes.json", {"n5": "2.0.0"})
+        _ensure_root(f"{ds_dir}/attributes.json", {"n5": "2.0.0"})
         _atomic_write_json(f"{grp}/attributes.json",
                            {"downsamplingFactors": xyz, "scales": xyz})
 
@@ -464,15 +481,12 @@ def ensure_group_json(cfg, setup):
     if fmt in ("zarr3", "zarr3_unsharded", "zarr3_zyx"):
         node = {"zarr_format": 3, "node_type": "group"}
         for path in (f"{root}/zarr.json", f"{root}/s{setup}-t0.zarr/zarr.json"):
-            if not _exists(path):
-                _atomic_write_json(path, node)
+            _ensure_root(path, node)
     elif fmt == "zarr2":
         for path in (f"{root}/.zgroup", f"{root}/s{setup}-t0.zarr/.zgroup"):
-            if not _exists(path):
-                _atomic_write_json(path, {"zarr_format": 2})
+            _ensure_root(path, {"zarr_format": 2})
     elif fmt == "n5":
-        if not _exists(f"{root}/attributes.json"):
-            _atomic_write_json(f"{root}/attributes.json", {"n5": "2.0.0"})
+        _ensure_root(f"{root}/attributes.json", {"n5": "2.0.0"})
 
 
 def open_output_array(cfg, setup, level, shape, dtype_name, context):

@@ -324,3 +324,16 @@ def test_one_definition_of_the_slot_count(monkeypatch):
     assert stores.slots(cores + 100) == cores            # clamped down to the box
     assert stores.slots(1) == 1                          # never clamped UP
     assert stores.slots(0) == 1                          # and never returns 0
+
+
+def test_write_group_metadata_never_rewrites_the_shared_root(tmp_path):
+    """Every array element calls this; rewriting the root file per element raced on /nrs
+    (ESTALE / NOT_FOUND on zarr.json.__lock) and killed 4 of 600 correct elements."""
+    from spotlight.stores import write_group_metadata
+    for fmt, name in (("zarr3", "zarr.json"), ("zarr2", ".zgroup"), ("n5", "attributes.json")):
+        root = tmp_path / fmt
+        root.mkdir()
+        (root / name).write_text('{"sentinel": 1}')
+        write_group_metadata({"output_intensity_path": str(root), "output_format": fmt},
+                             0, [(1, 1, 1)])
+        assert (root / name).read_text() == '{"sentinel": 1}', fmt
