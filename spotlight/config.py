@@ -433,11 +433,11 @@ def _load_toml_config(require_intensity_io=True):
 
 
 def tile_list(cfg):
-    """All setups to process. setup_ids (flattened) if given, else 0..last_setup."""
+    """All setups to process. setup_ids (flattened) if given, else first_setup..last_setup."""
     ids = cfg.get("setup_ids", [])
     if ids:
         return [s for group in ids for s in group]
-    return list(range(cfg["last_setup"] + 1))
+    return list(range(cfg.get("first_setup", 0), cfg["last_setup"] + 1))
 
 
 def parse_setups(values):
@@ -499,7 +499,7 @@ def camera_groups(cfg):
     """Setups grouped by camera: `setup_ids` as-is if given (one group per camera, e.g.
     `[[171,...,194], [201,...,204]]`, or ranges like `[["171-194"], ["201-204"]]` --
     expanded by `_load_toml_config` with the same grammar as `parse_setups`), else
-    contiguous `setups_per_camera`-sized chunks of `0..last_setup`.
+    contiguous `setups_per_camera`-sized chunks of `first_setup..last_setup`.
 
     Mirrors `camera_setups()` in src/BigFlatFieldIlluminator.jl, so the two pipelines
     agree on which setups belong to which camera.
@@ -508,9 +508,9 @@ def camera_groups(cfg):
     if ids:
         return [list(group) for group in ids]
     per_cam = cfg.get("setups_per_camera", 1)
-    last = cfg["last_setup"]
+    first, last = cfg.get("first_setup", 0), cfg["last_setup"]
     return [list(range(start, min(start + per_cam, last + 1)))
-            for start in range(0, last + 1, per_cam)]
+            for start in range(first, last + 1, per_cam)]
 
 
 def basic_field_paths(cfg, camera):

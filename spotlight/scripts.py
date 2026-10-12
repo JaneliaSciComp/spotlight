@@ -179,6 +179,9 @@ def _setup_selector(cfg, setups=None):
     flat = list(setups) if setups else [s for group in cfg.get("setup_ids", []) for s in group]
     if flat:
         return len(flat), f"S=({' '.join(str(s) for s in flat)}); ", "${S[$(($LSB_JOBINDEX-1))]}"
+    first = cfg.get("first_setup", 0)
+    if first:
+        return cfg["last_setup"] - first + 1, "", f"$(($LSB_JOBINDEX-1+{first}))"
     return cfg["last_setup"] + 1, "", "$(($LSB_JOBINDEX-1))"
 
 

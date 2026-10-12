@@ -115,6 +115,23 @@ def test_camera_setups(tmp_path, monkeypatch):
     ]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="drives bash; the cluster is always Linux")
+def test_first_setup_starts_every_setup_list(tmp_path, monkeypatch):
+    """Local list, camera chunks and the cluster array must all agree on first..last."""
+    import subprocess
+    from spotlight import scripts
+    monkeypatch.chdir(tmp_path)
+    config.set_config(results_root="/res", first_setup=3, last_setup=8, setups_per_camera=3)
+    cfg = config.load_config()
+    assert config.tile_list(cfg) == [3, 4, 5, 6, 7, 8]
+    assert config.camera_groups(cfg) == [[3, 4, 5], [6, 7, 8]]
+    n, prefix, arg = scripts._setup_selector(cfg)
+    got = [subprocess.run(["bash", "-c", f"{prefix}echo {arg}"], text=True, capture_output=True,
+                          env={"LSB_JOBINDEX": str(i)}).stdout.strip()
+           for i in range(1, n + 1)]
+    assert got == [str(s) for s in config.tile_list(cfg)]
+
+
 def test_basic_view_rebinds_the_io_paths(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     config.set_config(results_root="/res", last_setup=0,
