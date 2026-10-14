@@ -381,10 +381,25 @@ for f in output/_ic_*.txt; do awk -v F="$f" '
   b && /Run time :/ {print h, $4, F; b=0}' "$f"; done | sort -k2 -rn | head
 ```
 
-Still unverified: that this program actually reports 140 under `-W` rather than converting
-SIGUSR2 into something else. It cannot be checked off-cluster, and the 12 exit-1 `bkill`
-results above are the reason to check it rather than assume — submit one element with
-`-W 1` and read the reported code before trusting the requeue on a full array.
+### It did not: `pixi run` reported every run-limit kill as 1
+
+`20261007_DID15_3hrs` stats, job `154759218` and siblings: **55 `TERM_RUNLIMIT` kills, all
+`Exited with exit code 1`**, none requeued. None wrote a traceback, so Python died by a
+signal it does not handle (not SIGINT). The 1 was `pixi run`'s: it exits 1 whenever its
+child dies by signal. Measured locally, pixi 0.54.2 — SIGUSR2, SIGTERM and SIGINT, sent to
+the child or to pixi and the child, all give 1, while bare Python under `sh` gives 128+N.
+So every signal-based requeue code, `137` included, was unreachable.
+
+`scripts.runner()` now activates with `eval "$(pixi shell-hook ...)"` and `exec`s Python,
+which makes Python the job's process. Two consequences:
+
+- Anything prepended to the runner must be its own statement. A `VAR=1 ` prefix binds to
+  the `eval` and never reaches Python, which is why `SPOTLIGHT_APPLY_BASIC` is now
+  `export ...; `. `test_a_run_limit_kill_reaches_lsf_as_a_signal_death` runs the generated
+  line against a stub pixi and catches both reverts.
+- Still to confirm on LSF itself: that a signal death is reported as 140 and that `-Q`
+  then fires. `scripts/requeue_test/` in that experiment runs old vs new vs new+`-Q`
+  on a real stats element with `-W 1`.
 
 ## Writing to a macOS mount: `file_io_locking`, not the obvious suspects
 

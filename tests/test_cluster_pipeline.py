@@ -199,3 +199,41 @@ def test_without_the_env_var_the_toml_still_decides(tmp_path, monkeypatch):
         '[spotlight]\ninput_basic_path = "/d/y.zarr"\nresults_root = "/res"\n'
         "last_setup = 3\napply_basic = true\n")
     assert config.load_config()["apply_basic"] is True
+
+
+def test_a_run_limit_kill_reaches_lsf_as_a_signal_death(generate, tmp_path):
+    """`-Q "140"` requeues on the exit code LSF sees, so the job command must not swallow it.
+
+    `pixi run` did: it exits 1 whenever its child dies by signal (measured, pixi 0.54.2, for
+    SIGUSR2, SIGTERM and SIGINT alike), so every run-limit kill reached LSF as 1 and nothing
+    was ever requeued. The stub `pixi` reproduces that for `run`; its `shell-hook` puts a
+    `python` on PATH that reports the stage's environment and then dies by SIGUSR2, which is
+    what LSF sends at `-W`. The command is the GENERATED one, run as LSF runs it, so a
+    `VAR=1 ` prefix binding to the runner's `eval` instead of Python fails here too.
+    """
+    import signal
+    py = tmp_path / "env"
+    py.mkdir()
+    (py / "python").write_text(
+        '#!/bin/bash\n'
+        'echo "APPLY=${SPOTLIGHT_APPLY_BASIC:-unset} ARENA=${MALLOC_ARENA_MAX:-unset}"\n'
+        'kill -USR2 $$\n')
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "pixi").write_text(
+        '#!/bin/bash\n'
+        f'if [ "$1" = shell-hook ]; then echo \'export PATH="{py}:$PATH"\'; exit 0; fi\n'
+        'if [ "$1" = run ]; then shift; while [ "${1#--}" != "$1" ]; do shift 2; done\n'
+        f'  PATH="{py}:$PATH" "$@"; rc=$?; [ $rc -gt 128 ] && exit 1; exit $rc; fi\n'
+        'exit 2\n')
+    for f in (py / "python", stub / "pixi"):
+        f.chmod(0o755)
+
+    line = next(l for l in generate("both").splitlines() if l.startswith("J_INT_AGGREGATE="))
+    cmd = line[line.index("'") + 1:line.rindex("'")]
+    r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True,
+                       env={**os.environ, "PATH": f"{stub}:{os.environ['PATH']}"})
+    assert "APPLY=1 ARENA=4" in r.stdout, (cmd, r.stdout, r.stderr)
+    # Died BY the signal: with `exec` the shell itself dies (-N); a forking shell reports
+    # 128+N. LSF reports either as 128+N. `pixi run`'s 1 is the failure.
+    assert r.returncode in (-signal.SIGUSR2, 128 + signal.SIGUSR2), (cmd, r.returncode, r.stderr)
