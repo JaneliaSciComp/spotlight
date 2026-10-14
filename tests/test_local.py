@@ -105,7 +105,7 @@ def test_stages_cover_every_cli_stage():
     """A stage added to the CLI but not to a pipeline is unreachable locally."""
     assert set(local.STAGES) == {
         "emptiness", "stats", "qstack", "basic", "int-stats", "int-aggregate", "correct",
-        "spotfix"}
+        "spotfix", "xml"}
     for name in CORRECTION_PIPELINES:
         stages = local.PIPELINES[name]
         assert stages[0] == "emptiness", f"{name} must measure emptiness first"

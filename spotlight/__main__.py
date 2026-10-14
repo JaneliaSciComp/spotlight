@@ -51,6 +51,13 @@ def main(argv=None):
 
     sub.add_parser("emptiness", help="measure background level, threshold, empty fractions")
 
+    p = sub.add_parser("xml", help="write <dataset_xml>.flatfield.xml, which applies the "
+                                   "BaSiC fields while BigStitcher reads")
+    p.add_argument("xmls", nargs="*", metavar="XML",
+                   help="the xmls to wrap (default: dataset_xml); a split xml gets its "
+                        "nested loader wrapped, dataset.split.xml -> "
+                        "dataset.split.flatfield.xml")
+
     p = sub.add_parser("int-stats", help="per-tile intensity stats for one setup")
     p.add_argument("setup", type=int, nargs="?", default=None)
     sub.add_parser("int-aggregate", help="reduce per-tile intensity stats to a target")
@@ -78,6 +85,9 @@ def main(argv=None):
                         "`qstack` and `basic`")
     p.add_argument("--dry-run", action="store_true",
                    help="list the stages and units without running them")
+    p.add_argument("--xml", action="store_true",
+                   help="basic/both only: end with the `xml` stage instead of `correct` -- "
+                        "an xml that applies the fields on read, nothing rewritten")
     p.add_argument("--cluster", action="store_true",
                    help="write one chained bsub script for this pipeline instead of "
                         "running it here. Nothing is submitted until you run that script, "
@@ -93,11 +103,11 @@ def main(argv=None):
         if args.cluster:
             from . import scripts
             scripts.write_pipeline_script(config.load_config(), args.pipeline,
-                                          args.start_at, args.stop_after, tiles)
+                                          args.start_at, args.stop_after, tiles, args.xml)
             return
         from . import local
         local.run_pipeline(config.load_config(), args.pipeline, args.start_at,
-                           args.stop_after, args.dry_run, tiles)
+                           args.stop_after, args.dry_run, tiles, args.xml)
         return
 
     if args.stage == "submit":
@@ -136,6 +146,9 @@ def main(argv=None):
     elif args.stage == "emptiness":
         from . import scripts
         scripts.measure_emptiness(cfg)
+    elif args.stage == "xml":
+        from . import bdv_xml
+        bdv_xml.write_flatfield_xml(cfg, args.xmls)
 
 
 if __name__ == "__main__":

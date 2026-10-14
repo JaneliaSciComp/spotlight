@@ -49,7 +49,11 @@ PIPELINES = {
              "correct"],
 }
 
-STAGES = sorted({s for v in PIPELINES.values() for s in v})
+# `run basic|both --xml` ends with this stage instead of `correct`: an xml that applies the
+# fields while BigStitcher reads, rather than a rewritten copy of every voxel.
+XML_PIPELINES = ("basic", "both")
+
+STAGES = sorted({s for v in PIPELINES.values() for s in v} | {"xml"})
 
 # Which correction each pipeline ends with. `both` reads the raw store once and applies
 # flat/dark and the per-tile gain together, which is the whole reason to prefer it.
@@ -89,8 +93,13 @@ def apply_basic_for(pipeline):
     return _CORRECT_MODE[pipeline] == "both"
 
 
-def _plan(pipeline, start_at, stop_after):
+def _plan(pipeline, start_at, stop_after, xml=False):
     stages = PIPELINES[pipeline]
+    if xml:
+        if pipeline not in XML_PIPELINES:
+            raise SystemExit(f"--xml applies the BaSiC fields, so it needs one of "
+                             f"{XML_PIPELINES}, not {pipeline!r}")
+        stages = ["xml" if s == "correct" else s for s in stages]
     lo = stages.index(start_at) if start_at else 0
     hi = stages.index(stop_after) + 1 if stop_after else len(stages)
     if lo >= hi:
@@ -138,6 +147,8 @@ def _units(cfg, stage, mode, tiles=None):
         chosen = _config.check_setups_in_xml(cfg, tiles) if tiles else setups()
         return [(f"setup {s}", lambda s=s: correct.apply_correction_chunked(cfg, s, mode))
                 for s in chosen]
+    if stage == "xml":
+        return [("dataset xml", lambda: _write_xml(cfg, mode))]
     if stage == "spotfix":
         from . import spotfix
         if not tiles:
@@ -147,8 +158,18 @@ def _units(cfg, stage, mode, tiles=None):
     raise ValueError(f"unknown stage {stage!r}")
 
 
+def _write_xml(cfg, mode):
+    from . import bdv_xml
+    bdv_xml.write_flatfield_xml(cfg)
+    if mode == "both":
+        # The xml carries the flat/dark fields only. The gains were measured on corrected
+        # voxels, so they belong with this xml, but nothing applies them yet.
+        print("xml: the per-tile gains are in intensity_target.json; the xml does not "
+              "apply them")
+
+
 def run_pipeline(cfg=None, pipeline="basic", start_at=None, stop_after=None,
-                 dry_run=False, tiles=None):
+                 dry_run=False, tiles=None, xml=False):
     """Run `pipeline` end to end in this process.
 
     `--start-at` / `--stop-after` exist because the natural checkpoints are inspection
@@ -159,7 +180,7 @@ def run_pipeline(cfg=None, pipeline="basic", start_at=None, stop_after=None,
     cfg = _config.load_config() if cfg is None else cfg
     mode = _CORRECT_MODE[pipeline]
     cfg = {**cfg, "apply_basic": apply_basic_for(pipeline)}
-    stages = _plan(pipeline, start_at, stop_after)
+    stages = _plan(pipeline, start_at, stop_after, xml)
 
     # On its own line: `test_stage_windows` parses the stage list off the line above by
     # splitting on stage names, and a suffix containing "basic" reads as a stage.

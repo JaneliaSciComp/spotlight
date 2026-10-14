@@ -44,6 +44,7 @@ sp.set_config(
     dataset_xml       = "/path/to/data/dataset.xml",  # tile overlaps, for the gain solve
     input_format      = "zarr3",  # zarr2 | zarr3 | zarr3_unsharded | zarr3_zyx | zarr3_raw | n5
     output_format     = "zarr3",  # same list, plus tiff (output only)
+    first_setup       = 0,        # optional, default 0: setups run first_setup..last_setup
     last_setup        = 8,
     setups_per_camera = 9,
     chunk_size        = [128, 128, 64],
