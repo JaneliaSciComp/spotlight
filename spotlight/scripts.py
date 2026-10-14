@@ -54,15 +54,19 @@ def runner():
     BLAS/OpenMP caps beside it -- those were measured and rejected. Both, plus the
     numbers: CLAUDE.md.
 
-    Activated with `shell-hook` and `exec`'d rather than launched by `pixi run`, because
-    `pixi run` exits 1 whenever its child dies by signal -- so the run-limit kill reached
-    LSF as 1, not 140, and `-Q` never requeued anything. `exec` makes Python the job's
-    process, so its signal death is what LSF reports. Being a statement now, not a command,
-    anything prepended must be its own statement too (`export X=1; `), not an `X=1 `
-    prefix, which would bind to the `eval` and never reach Python.
+    `-Q "140"` needs the job SHELL to exit 140, and both obvious launchers defeat it:
+    `pixi run` exits 1 whenever its child dies by signal, and an `exec`'d Python dies by
+    SIGUSR2 itself, which LSF reports as "signal termination: 12" and does not requeue
+    (both measured on LSF). So the shell activates with `shell-hook`, forks Python, and
+    exits with its status, 128+12. The `trap` is what keeps it alive to do that: LSF may
+    signal the whole process group, and a trap also stops bash exec-ing the last command
+    on its own. Python still dies, because a trapped signal reverts to default in a child.
+
+    A statement, not a command, so anything prepended must be its own statement too
+    (`export X=1; `) -- an `X=1 ` prefix would bind to the `trap` and never reach Python.
     """
-    return (f'eval "$(pixi shell-hook --shell bash --manifest-path {PACKAGE_ROOT})" && '
-            'MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-4} exec python -m spotlight')
+    return (f'trap : USR2; eval "$(pixi shell-hook --shell bash --manifest-path {PACKAGE_ROOT})" '
+            '&& MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-4} python -m spotlight')
 
 
 def _throttle(cfg, cores, n_jobs, n_arrays=1):
@@ -475,7 +479,7 @@ def _stage_jobs(cfg, stage, mode, apply_basic, dep, tiles=None):
     # Only int-stats and int-aggregate read the flag; `correct` sets its own from --mode.
     # Stated in the environment rather than detected per job -- see the SPOTLIGHT_APPLY_BASIC
     # comment in config._load_toml_config for what detection gets wrong here.
-    # `export ...; `, not a `VAR=1 ` prefix: `runner()` opens with an `eval`, which a prefix
+    # `export ...; `, not a `VAR=1 ` prefix: `runner()` opens with a `trap`, which a prefix
     # would bind to instead of Python.
     env = f"export SPOTLIGHT_APPLY_BASIC={int(apply_basic)}; "
 

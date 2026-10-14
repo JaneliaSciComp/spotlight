@@ -390,16 +390,26 @@ child dies by signal. Measured locally, pixi 0.54.2 — SIGUSR2, SIGTERM and SIG
 the child or to pixi and the child, all give 1, while bare Python under `sh` gives 128+N.
 So every signal-based requeue code, `137` included, was unreachable.
 
-`scripts.runner()` now activates with `eval "$(pixi shell-hook ...)"` and `exec`s Python,
-which makes Python the job's process. Two consequences:
+**`exec python` is not the fix either — measured.** `scripts/requeue_test/` in that
+experiment (a real stats element, `-W 1`): `pixi run` → `Exited with exit code 1`;
+`exec python` → **`Exited with signal termination: 12`**, and with `-Q 140` it was not
+requeued. The 140 in "128+12" is a SHELL convention: it only exists if a shell waits on
+Python and exits with its status. An exec'd process dying by signal is a different report.
+
+So `scripts.runner()` is `trap : USR2; eval "$(pixi shell-hook ...)" && python ...`. Each
+piece is load-bearing, and the local probe shows which (bash, SIGUSR2 to the process
+group and to the child alone): `exec` → killed by signal both ways; fork with no trap →
+the same, because `bash -c` execs the last command itself; **trap + fork → 128+N both
+ways**. The trap keeps the shell alive if LSF signals the group, and Python still dies
+because a trapped signal reverts to default in a child.
 
 - Anything prepended to the runner must be its own statement. A `VAR=1 ` prefix binds to
-  the `eval` and never reaches Python, which is why `SPOTLIGHT_APPLY_BASIC` is now
-  `export ...; `. `test_a_run_limit_kill_reaches_lsf_as_a_signal_death` runs the generated
-  line against a stub pixi and catches both reverts.
-- Still to confirm on LSF itself: that a signal death is reported as 140 and that `-Q`
-  then fires. `scripts/requeue_test/` in that experiment runs old vs new vs new+`-Q`
-  on a real stats element with `-W 1`.
+  the `trap` and never reaches Python, which is why `SPOTLIGHT_APPLY_BASIC` is now
+  `export ...; `. `test_a_run_limit_kill_reaches_lsf_as_140` runs the generated line,
+  signals its process group, and requires exactly 128+SIGUSR2; it fails for `pixi run`,
+  `exec`, no trap, the `VAR=1 ` prefix and a dropped arena cap.
+- Still to confirm on LSF: the trap form's 140, and `-Q` firing on it. Same test
+  directory, round 2.
 
 ## Writing to a macOS mount: `file_io_locking`, not the obvious suspects
 

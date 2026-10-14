@@ -201,15 +201,18 @@ def test_without_the_env_var_the_toml_still_decides(tmp_path, monkeypatch):
     assert config.load_config()["apply_basic"] is True
 
 
-def test_a_run_limit_kill_reaches_lsf_as_a_signal_death(generate, tmp_path):
-    """`-Q "140"` requeues on the exit code LSF sees, so the job command must not swallow it.
+def test_a_run_limit_kill_reaches_lsf_as_140(generate, tmp_path):
+    """`-Q "140"` requeues on the job shell's EXIT CODE, so the shell must outlive Python and
+    exit 128+SIGUSR2 -- what LSF sends at `-W`. Two launchers measured on LSF failed it:
+    `pixi run` exits 1 for any signalled child, and an `exec`'d Python dies by the signal
+    itself, reported as "signal termination: 12" and never requeued. So a signal death
+    (-N here) is a failure too, not just the 1.
 
-    `pixi run` did: it exits 1 whenever its child dies by signal (measured, pixi 0.54.2, for
-    SIGUSR2, SIGTERM and SIGINT alike), so every run-limit kill reached LSF as 1 and nothing
-    was ever requeued. The stub `pixi` reproduces that for `run`; its `shell-hook` puts a
-    `python` on PATH that reports the stage's environment and then dies by SIGUSR2, which is
-    what LSF sends at `-W`. The command is the GENERATED one, run as LSF runs it, so a
-    `VAR=1 ` prefix binding to the runner's `eval` instead of Python fails here too.
+    The signal goes to the whole process group, as LSF may send it: that is what kills an
+    untrapped shell alongside Python. The stub `pixi run` behaves as measured (pixi 0.54.2);
+    its `shell-hook` puts a `python` on PATH that reports the stage's environment, then
+    waits to be killed. The command is the GENERATED one, so a `VAR=1 ` prefix binding to
+    the runner's first statement instead of Python fails here too.
     """
     import signal
     py = tmp_path / "env"
@@ -217,13 +220,13 @@ def test_a_run_limit_kill_reaches_lsf_as_a_signal_death(generate, tmp_path):
     (py / "python").write_text(
         '#!/bin/bash\n'
         'echo "APPLY=${SPOTLIGHT_APPLY_BASIC:-unset} ARENA=${MALLOC_ARENA_MAX:-unset}"\n'
-        'kill -USR2 $$\n')
+        'exec sleep 30\n')
     stub = tmp_path / "bin"
     stub.mkdir()
     (stub / "pixi").write_text(
         '#!/bin/bash\n'
         f'if [ "$1" = shell-hook ]; then echo \'export PATH="{py}:$PATH"\'; exit 0; fi\n'
-        'if [ "$1" = run ]; then shift; while [ "${1#--}" != "$1" ]; do shift 2; done\n'
+        'if [ "$1" = run ]; then trap : USR2; shift; while [ "${1#--}" != "$1" ]; do shift 2; done\n'
         f'  PATH="{py}:$PATH" "$@"; rc=$?; [ $rc -gt 128 ] && exit 1; exit $rc; fi\n'
         'exit 2\n')
     for f in (py / "python", stub / "pixi"):
@@ -231,9 +234,11 @@ def test_a_run_limit_kill_reaches_lsf_as_a_signal_death(generate, tmp_path):
 
     line = next(l for l in generate("both").splitlines() if l.startswith("J_INT_AGGREGATE="))
     cmd = line[line.index("'") + 1:line.rindex("'")]
-    r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True,
-                       env={**os.environ, "PATH": f"{stub}:{os.environ['PATH']}"})
-    assert "APPLY=1 ARENA=4" in r.stdout, (cmd, r.stdout, r.stderr)
-    # Died BY the signal: with `exec` the shell itself dies (-N); a forking shell reports
-    # 128+N. LSF reports either as 128+N. `pixi run`'s 1 is the failure.
-    assert r.returncode in (-signal.SIGUSR2, 128 + signal.SIGUSR2), (cmd, r.returncode, r.stderr)
+    p = subprocess.Popen(["bash", "-c", cmd], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         text=True, start_new_session=True,
+                         env={**os.environ, "PATH": f"{stub}:{os.environ['PATH']}"})
+    first = p.stdout.readline()
+    os.killpg(p.pid, signal.SIGUSR2)
+    rc = p.wait(timeout=10)
+    assert "APPLY=1 ARENA=4" in first, (cmd, first, p.stderr.read())
+    assert rc == 128 + signal.SIGUSR2, (cmd, rc, p.stderr.read())
