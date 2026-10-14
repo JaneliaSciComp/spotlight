@@ -50,7 +50,7 @@ def test_full_pipeline(experiment):
     main(["stats", "0", "1", "4"])
 
     qdir = experiment / "qstacks"
-    main(["qstack"])
+    main(["qstack", "0"])                     # as the cluster array element invokes it
     tiff = qdir / "camera1.tiff"
     assert tiff.is_file()
 

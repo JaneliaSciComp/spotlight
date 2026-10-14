@@ -178,8 +178,11 @@ default is ~17x the apply stage's worst case; against a whole-camera BaSiC fit i
 The asymmetry is what forces a generous value: overshooting costs a wedged host a few idle
 hours, undershooting costs an **infinite requeue loop** — `-Q 140` has no job-level retry cap
 — and in a chain nothing downstream ever starts. `WHOLE_CAMERA_RUNLIMIT = 8`; replace it with
-a measurement when there is one. `basic` is one array element per camera, so the fits run
-concurrently.
+a measurement when there is one. `qstack` and `basic` are both one array element per
+camera, so the cameras run concurrently. `qstack` measured ~75 s per camera on
+`20261007_DID15_3hrs` (19 cameras, ~24 min as a single job). Its per-camera form skips the
+raw-mode emptiness rescan `save_qstack` does, because generation already ran
+`ensure_emptiness`.
 
 ### `SPOTLIGHT_APPLY_BASIC`, because each stage is now its own process
 
@@ -408,8 +411,12 @@ because a trapped signal reverts to default in a child.
   `export ...; `. `test_a_run_limit_kill_reaches_lsf_as_140` runs the generated line,
   signals its process group, and requires exactly 128+SIGUSR2; it fails for `pixi run`,
   `exec`, no trap, the `VAR=1 ` prefix and a dropped arena cap.
-- Still to confirm on LSF: the trap form's 140, and `-Q` firing on it. Same test
-  directory, round 2.
+- **Confirmed on LSF, round 2** (jobs `154759851`–`3`): `pixi run` → 1, trap form →
+  **`Exited with exit code 140`**, and trap form + `-Q 140` was requeued and its second
+  attempt completed.
+- **A requeued attempt gets no job report.** `newQ`'s log holds only the final attempt's
+  `Successfully completed`; the first attempt's 140 never appears. So scraping logs for
+  `TERM_RUNLIMIT` undercounts once requeue works — `bhist -l <id>` shows the requeues.
 
 ## Writing to a macOS mount: `file_io_locking`, not the obvious suspects
 

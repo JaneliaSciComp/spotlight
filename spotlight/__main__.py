@@ -35,7 +35,9 @@ def main(argv=None):
     p.add_argument("start", type=int, nargs="?", default=1)
     p.add_argument("stop", type=int, nargs="?", default=None)
 
-    sub.add_parser("qstack", help="assemble the per-camera BaSiC input TIFFs")
+    p = sub.add_parser("qstack", help="assemble the per-camera BaSiC input TIFFs "
+                                      "(all cameras, or the one named)")
+    p.add_argument("camera", type=int, nargs="?", default=None)
 
     p = sub.add_parser("basic", help="fit flat/dark fields (all cameras, or those named)")
     p.add_argument("cameras", type=int, nargs="*")
@@ -135,7 +137,13 @@ def main(argv=None):
         quantiles.calculate_camera_stats(cfg, args.camera, args.start, args.stop)
     elif args.stage == "qstack":
         from . import qstack
-        qstack.save_qstack(cfg)
+        if args.camera is None:
+            qstack.save_qstack(cfg)
+        else:
+            # One camera is an array element: the emptiness pass `save_qstack` runs for
+            # raw-mode cameras already ran when the cluster script was generated, and every
+            # element rerunning it at once would rescan every tile N times over.
+            qstack.save_qstack_camera(cfg, args.camera)
     elif args.stage == "basic":
         from . import basic
         basic.run_basic(cfg, args.cameras or None)

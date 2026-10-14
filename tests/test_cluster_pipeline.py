@@ -156,6 +156,17 @@ def test_jsub_stops_the_chain_when_it_cannot_read_an_id(tmp_path, body):
     assert rc == 1 and "got:" not in out
 
 
+@pytest.mark.parametrize("stage", ["qstack", "basic"])
+def test_the_per_camera_stages_are_one_element_per_camera(generate, stage):
+    """Each camera's stack and fit are independent, so one job walking them in turn is
+    wall clock for nothing -- ~24 min for qstack on a 19-camera dataset. The index is
+    0-based on the CLI and LSF's is 1-based, so the `-1` is the part worth pinning.
+    """
+    line = next(l for l in generate("both").splitlines() if l.startswith(f"{VAR[stage]}="))
+    assert f"spotlight-{stage}[1-2]" in line, line
+    assert f" {stage} $(($LSB_JOBINDEX-1))" in line, line
+
+
 def test_the_whole_camera_stages_get_a_longer_run_limit_than_the_per_tile_ones(generate):
     """`-Q 140` has no retry cap, so a `-W` shorter than a healthy run is an infinite
     requeue loop -- and in a chain, nothing after it ever starts. qstack and basic process

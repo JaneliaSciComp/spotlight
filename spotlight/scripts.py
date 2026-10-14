@@ -495,8 +495,12 @@ def _stage_jobs(cfg, stage, mode, apply_basic, dep, tiles=None):
                  for c in cameras],
                 [f"J_STATS_{c}" for c in cameras])
     if stage == "qstack":
+        # One element per camera, like `basic`: each camera's stack is independent, and
+        # serially they were ~75 s apiece -- 19 cameras was ~24 min of one job.
+        n = _config.num_cameras(cfg)
         return ([_bsub(cfg, "spotlight-qstack", cfg["n_cores_qstack"], "qs",
-                       f"{runner()} qstack", runlimit=WHOLE_CAMERA_RUNLIMIT, **sub)],
+                       f"{runner()} qstack $(($LSB_JOBINDEX-1))", array=n,
+                       runlimit=WHOLE_CAMERA_RUNLIMIT, **sub)],
                 ["J_QSTACK"])
     if stage == "basic":
         # One element per camera: the fits are independent, and the SVD is the slow part.
